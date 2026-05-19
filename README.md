@@ -30,8 +30,11 @@ python3 scripts/agentctl.py
 - 如果 workspace 已存在且非空，会跳过 `workspace.populate`，继续后续步骤
 - `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 的
   `models.providers.unipay-fun.apiKey`
+- `--model-env` 默认为 `test`；传 `cn` 时会使用
+  `https://api.youhlhl.com/aigateway/v1` 作为模型调用地址，并从
+  `https://api.youhlhl.com/aigateway/api/frontend/aimodels` 拉取模型目录
 - 创建时会生成新的 `gateway_token`，写入 `gateway.auth.token`，并在返回结果里带回
-- 创建时会先从
+- 默认 `test` 环境创建时会先从
   `https://unitag.dola.fi/aigateway/api/frontend/aimodels`
   拉取当前激活模型目录，再写入 `~/.openclaw/openclaw.json`
 - 写入时会把返回模型转换成 `openclaw` 当前使用的 provider 模型定义结构，保存到
@@ -57,11 +60,13 @@ python3 scripts/agentctl.py
 ```bash
 cd ~/data/agent_manage && python3 scripts/agentctl.py create-instance \
   --template-name unipay-claw-base \
-  --model-key YOUR_MODEL_KEY
+  --model-key YOUR_MODEL_KEY \
+  --model-env cn
 ```
 
 可选参数：
 
+- `--model-env test|cn`
 - `--model`
 - `--workspace-root`
 - `--no-rollback`
@@ -1019,7 +1024,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py models
 
 ### 行为说明
 
-- 重新请求 `https://unitag.dola.fi/aigateway/api/frontend/aimodels`
+- 重新请求当前 `models.providers.unipay-fun.baseUrl` 对应环境的模型目录
 - 将最新激活模型按当前 `openclaw` 配置格式写回 `~/.openclaw/openclaw.json`
 - 优先保留当前默认模型；如果当前默认模型已经不在最新目录里，则回退到推荐默认模型
 - 需要当前配置中已经存在 `models.providers.unipay-fun.apiKey`

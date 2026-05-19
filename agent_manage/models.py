@@ -7,6 +7,7 @@ from dataclasses import dataclass
 class CreateInstanceRequest:
     template_name: str
     model_key: str
+    model_env: str = "test"
     model: str | None = None
     workspace_root: str = "~/data"
     rollback_on_fail: bool = True

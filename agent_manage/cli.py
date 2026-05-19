@@ -25,6 +25,9 @@ from .models import (
 )
 from .orchestrator import InstanceManagerV2
 
+MODEL_ENV_CHOICES = sorted(InstanceManagerV2.MODEL_GATEWAYS.keys())
+DEFAULT_MODEL_ENV = InstanceManagerV2.DEFAULT_MODEL_ENV
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = JsonArgumentParser(prog="agent-manage")
@@ -38,6 +41,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     create_instance = subparsers.add_parser("create-instance")
     create_instance.add_argument("--template-name", required=True)
     create_instance.add_argument("--model-key", required=True)
+    create_instance.add_argument(
+        "--model-env",
+        choices=MODEL_ENV_CHOICES,
+        default=DEFAULT_MODEL_ENV,
+    )
     create_instance.add_argument("--model")
     create_instance.add_argument("--workspace-root", default="~/data")
     create_instance.add_argument("--no-rollback", action="store_true")
@@ -103,6 +111,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 CreateInstanceRequest(
                     template_name=args.template_name,
                     model_key=args.model_key,
+                    model_env=args.model_env,
                     model=args.model,
                     workspace_root=args.workspace_root,
                     rollback_on_fail=not args.no_rollback,

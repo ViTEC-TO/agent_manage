@@ -53,6 +53,33 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "TEMPLATE_ARCHIVE_NOT_FOUND")
         self.assertIsNone(payload["result"])
 
+    def test_agent_manage_create_instance_accepts_cn_model_env(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.create_instance.return_value = {
+                "ok": True,
+                "agent_name": "base",
+            }
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "create-instance",
+                        "--template-name",
+                        "base",
+                        "--model-key",
+                        "test-key",
+                        "--model-env",
+                        "cn",
+                    ]
+                )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request.model_env, "cn")
+        self.assertEqual(payload["result"]["agent_name"], "base")
+
     def test_agent_manage_tg_bot_status_uses_result_envelope(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
             manager_cls.return_value.get_tg_bot_status.return_value = {

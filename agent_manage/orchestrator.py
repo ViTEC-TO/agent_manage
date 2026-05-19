@@ -39,7 +39,18 @@ class InstanceManagerV2:
     WEIXIN_PLUGIN_PACKAGE = "@tencent-weixin/openclaw-weixin"
     WEIXIN_DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
     MANAGED_MODEL_PROVIDER = "unipay-fun"
-    MODEL_CATALOG_URL = "https://unitag.dola.fi/aigateway/api/frontend/aimodels"
+    DEFAULT_MODEL_ENV = "test"
+    MODEL_GATEWAYS = {
+        "test": {
+            "base_url": "https://unitag.dola.fi/aigateway/v1",
+            "catalog_url": "https://unitag.dola.fi/aigateway/api/frontend/aimodels",
+        },
+        "cn": {
+            "base_url": "https://api.youhlhl.com/aigateway/v1",
+            "catalog_url": "https://api.youhlhl.com/aigateway/api/frontend/aimodels",
+        },
+    }
+    MODEL_CATALOG_URL = MODEL_GATEWAYS[DEFAULT_MODEL_ENV]["catalog_url"]
     DEFAULT_MODEL_MAX_TOKENS = 128000
     PREFERRED_PRIMARY_MODEL_IDS = (
         "deepseek-v4-flash",
@@ -73,6 +84,7 @@ class InstanceManagerV2:
     def create_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
         if not request.model_key.strip():
             raise ValueError("model_key is required")
+        model_gateway = self._model_gateway_for_env(request.model_env)
         steps: List[Dict[str, object]] = []
         agent_name = self.resolve_agent_name(request)
         workspace = self.default_workspace(agent_name, request.workspace_root)
@@ -101,7 +113,7 @@ class InstanceManagerV2:
             fetched_models = self._run_timed_step(
                 steps,
                 "models.fetch_catalog",
-                self._fetch_supported_gateway_models,
+                lambda: self._fetch_supported_gateway_models(model_gateway["catalog_url"]),
             )
 
             models_result = self._run_timed_step(
@@ -110,6 +122,7 @@ class InstanceManagerV2:
                 lambda: self._configure_config_models(
                     model_key=request.model_key,
                     supported_models=fetched_models["models"],
+                    base_url=model_gateway["base_url"],
                 ),
             )
 
@@ -130,6 +143,7 @@ class InstanceManagerV2:
                 "ok": True,
                 "template_name": request.template_name,
                 "agent_name": agent_name,
+                "model_env": request.model_env,
                 "gateway_token": gateway_token,
                 "workspace": str(workspace),
                 "archive_path": str(archive_path),
@@ -669,12 +683,14 @@ class InstanceManagerV2:
         config = self._load_config()
         current_model = self._configured_default_model_from_config(config)
         model_key = self._configured_model_api_key_from_config(config)
+        base_url = self._configured_model_base_url_from_config(config)
+        catalog_url = self._catalog_url_for_model_base_url(base_url)
         steps: List[Dict[str, object]] = []
 
         fetched_models = self._run_timed_step(
             steps,
             "models.fetch_catalog",
-            self._fetch_supported_gateway_models,
+            lambda: self._fetch_supported_gateway_models(catalog_url),
         )
         configure_result = self._run_timed_step(
             steps,
@@ -683,6 +699,7 @@ class InstanceManagerV2:
                 model_key=model_key,
                 supported_models=fetched_models["models"],
                 primary_model=current_model,
+                base_url=base_url,
             ),
         )
 
@@ -1121,8 +1138,10 @@ class InstanceManagerV2:
         model_key: str,
         supported_models: List[Dict[str, object]],
         primary_model: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> Dict[str, object]:
         config_path = self.config_path
+        resolved_base_url = base_url or self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"]
         managed_model_refs = [item["model_ref"] for item in supported_models]
         resolved_primary_model = self._select_primary_model_ref(
             supported_models,
@@ -1132,6 +1151,7 @@ class InstanceManagerV2:
             return {
                 "skipped": True,
                 "config_path": str(config_path),
+                "base_url": resolved_base_url,
                 "primary_model": resolved_primary_model,
                 "managed_models": managed_model_refs,
             }
@@ -1149,7 +1169,7 @@ class InstanceManagerV2:
             "mode": "merge",
             "providers": {
                 self.MANAGED_MODEL_PROVIDER: {
-                    "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                    "baseUrl": resolved_base_url,
                     "api": "openai-completions",
                     "apiKey": model_key,
                     "models": [item["definition"] for item in supported_models],
@@ -1168,10 +1188,12 @@ class InstanceManagerV2:
             extra={
                 "primary_model": resolved_primary_model,
                 "managed_models": managed_model_refs,
+                "base_url": resolved_base_url,
             },
         )
         return {
             "config_path": str(config_path),
+            "base_url": resolved_base_url,
             "primary_model": resolved_primary_model,
             "managed_models": managed_model_refs,
         }
@@ -1547,10 +1569,11 @@ class InstanceManagerV2:
     def _generate_gateway_token(self) -> str:
         return secrets.token_urlsafe(32)
 
-    def _fetch_supported_gateway_models(self) -> Dict[str, object]:
-        self.runner.log(f"models: fetch catalog {self.MODEL_CATALOG_URL}")
+    def _fetch_supported_gateway_models(self, catalog_url: Optional[str] = None) -> Dict[str, object]:
+        resolved_catalog_url = catalog_url or self.MODEL_CATALOG_URL
+        self.runner.log(f"models: fetch catalog {resolved_catalog_url}")
         request = Request(
-            self.MODEL_CATALOG_URL,
+            resolved_catalog_url,
             headers={
                 "Accept": "application/json",
                 "User-Agent": "agent_manage/1.0",
@@ -1576,11 +1599,25 @@ class InstanceManagerV2:
 
         models.sort(key=self._supported_model_sort_key)
         return {
-            "source_url": self.MODEL_CATALOG_URL,
+            "source_url": resolved_catalog_url,
             "model_count": len(models),
             "models": models,
             "primary_model": self._select_primary_model_ref(models),
         }
+
+    def _model_gateway_for_env(self, model_env: Optional[str]) -> Dict[str, str]:
+        resolved_env = (model_env or self.DEFAULT_MODEL_ENV).strip()
+        gateway = self.MODEL_GATEWAYS.get(resolved_env)
+        if gateway is None:
+            allowed = ", ".join(sorted(self.MODEL_GATEWAYS))
+            raise ValueError(f"Unsupported model_env '{resolved_env}'. Allowed: {allowed}")
+        return gateway
+
+    def _catalog_url_for_model_base_url(self, base_url: str) -> str:
+        for gateway in self.MODEL_GATEWAYS.values():
+            if gateway["base_url"] == base_url:
+                return gateway["catalog_url"]
+        raise ValueError(f"Unsupported model baseUrl '{base_url}'")
 
     def _normalize_catalog_model(self, item: Dict[str, object]) -> Dict[str, object]:
         model_id = str(item.get("identifier") or "").strip()
@@ -1684,6 +1721,13 @@ class InstanceManagerV2:
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError(f"Configured apiKey not found for provider '{self.MANAGED_MODEL_PROVIDER}'")
         return api_key.strip()
+
+    def _configured_model_base_url_from_config(self, config: Dict[str, object]) -> str:
+        provider = config.get("models", {}).get("providers", {}).get(self.MANAGED_MODEL_PROVIDER, {})
+        base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
+        if isinstance(base_url, str) and base_url.strip():
+            return base_url.strip()
+        return self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"]
 
     def _restart_gateway_service(self) -> Dict[str, object]:
         if self.runner.dry_run:

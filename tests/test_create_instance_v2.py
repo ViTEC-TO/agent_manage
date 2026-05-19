@@ -378,6 +378,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "test-key",
             )
             self.assertEqual(
+                saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
+                "https://unitag.dola.fi/aigateway/v1",
+            )
+            self.assertEqual(
                 saved_config["models"]["providers"]["unipay-fun"]["models"],
                 [item["definition"] for item in self.sample_supported_models],
             )
@@ -407,6 +411,32 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["steps"][4]["step"], "config.configure_models")
             self.assertEqual(result["steps"][-1]["step"], "config.configure_tools")
             self.assertEqual(result["steps"][-2]["step"], "config.configure_gateway_auth")
+
+    def test_configure_models_can_write_cn_gateway_base_url(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(
+                json.dumps({"agents": {"defaults": {}}}),
+                encoding="utf-8",
+            )
+
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager._configure_config_models(
+                model_key="cn-key",
+                supported_models=self.sample_supported_models,
+                base_url=InstanceManagerV2.MODEL_GATEWAYS["cn"]["base_url"],
+            )
+
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["base_url"], "https://api.youhlhl.com/aigateway/v1")
+        self.assertEqual(
+            saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
+            "https://api.youhlhl.com/aigateway/v1",
+        )
+        self.assertEqual(saved_config["models"]["providers"]["unipay-fun"]["apiKey"], "cn-key")
 
     def test_create_instance_installs_declared_common_skills_and_checks_libraries(self):
         runner = FakeRunner()
@@ -1978,6 +2008,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "models": {
                             "providers": {
                                 "unipay-fun": {
+                                    "baseUrl": "https://api.youhlhl.com/aigateway/v1",
                                     "apiKey": "test-key",
                                     "models": [],
                                 }
@@ -2002,6 +2033,10 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["models"],
             [item["definition"] for item in self.sample_supported_models],
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
+            "https://api.youhlhl.com/aigateway/v1",
         )
         self.assertEqual(result["steps"][0]["step"], "models.fetch_catalog")
         self.assertEqual(result["steps"][1]["step"], "config.configure_models")
