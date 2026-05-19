@@ -265,6 +265,49 @@ class InstanceManagerV2:
                     "model": spec.model,
                 }
             )
+            manifest = self._load_template_manifest(template_dir)
+            additional_specs = self._multi_agent_specs_from_template(
+                template_dir=template_dir,
+                manifest=manifest,
+                primary_agent_name=agent_name,
+                workspace_root=request.workspace_root,
+                fallback_model=spec.model,
+            )
+            for additional_spec in additional_specs:
+                additional_agent_name = str(additional_spec["agent_name"])
+                if additional_agent_name in seen_agent_names:
+                    raise ValueError(f"Duplicate agent_name in batch: {additional_agent_name}")
+                seen_agent_names.add(additional_agent_name)
+
+                additional_template_dir = Path(str(additional_spec["template_dir"]))
+                additional_workspace = Path(str(additional_spec["workspace"]))
+                additional_model = (
+                    additional_spec["model"]
+                    if isinstance(additional_spec.get("model"), str)
+                    else None
+                )
+                self._provision_agent_from_prepared_template(
+                    steps=steps,
+                    template_name=str(additional_spec["template_name"]),
+                    agent_name=additional_agent_name,
+                    template_dir=additional_template_dir,
+                    workspace=additional_workspace,
+                    model=additional_model,
+                    rollback_on_fail=True,
+                    step_scope=additional_agent_name,
+                )
+                agent_results.append(
+                    {
+                        "agent_name": additional_agent_name,
+                        "template_name": additional_spec["template_name"],
+                        "source": additional_spec["source"],
+                        "parent_agent_name": agent_name,
+                        "workspace": str(additional_workspace),
+                        "archive_path": str(archive_path),
+                        "template_dir": str(additional_template_dir),
+                        "model": additional_model,
+                    }
+                )
         step_results = self._index_step_results(steps)
         added_count = 0
         skipped_count = 0

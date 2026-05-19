@@ -139,11 +139,12 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py create-instance \
 - 如果模板声明了 `requiredLibraries`，会先验证/安装依赖
 - 如果模板提供了 `common-skills/` 或 `commonSkillFolders`，会同步到 `~/.openclaw/skills/`
 - 再把 `~/template/{templateName}/` 整体复制到 workspace
+- 如果某个条目对应多 agent 模板，也会自动追加默认入口之外的 `agents/` 团队成员
 - 未显式传 `workspace` 时，默认使用 `--workspace-root/{agent_name}`，默认根目录仍为 `~/data`
 - 单个 agent 的创建顺序与 `create-instance` 一致，`openclaw agents add` 发生在模板解压、依赖检查和 common skills 同步之后、workspace 填充之前
 - 如果同名 agent 已存在，会跳过该项并继续处理剩余项
 - 如果 workspace 已存在且非空，会跳过该项的 `workspace.populate`
-- 批量追加完成后会写入 `tools.agentToAgent.enabled = true`，并把 `main` 和本批次 agent 合并进
+- 批量追加完成后会写入 `tools.agentToAgent.enabled = true`，并把 `main`、本批次 agent 和多 agent 团队成员合并进
   `tools.agentToAgent.allow`；同时设置 `tools.sessions.visibility = all`
 - 批量追加完成后不额外执行 `openclaw gateway restart`
 - 返回体会显式给出 `restart_required = false` 和空的 `post_batch_actions`

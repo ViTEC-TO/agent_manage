@@ -1192,6 +1192,119 @@ class CreateInstanceV2Test(unittest.TestCase):
                 str((template_root / "base.zip").resolve()),
             )
 
+    def test_add_agents_expands_multi_agent_template_members(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            template_root.mkdir(parents=True)
+            workspace_root = tmp_path / "data"
+            self._write_archive(
+                template_root / "legal-team.zip",
+                {
+                    "template.yaml": "\n".join(
+                        [
+                            "copyMode: multi_agent_template",
+                            "agents:",
+                            "  - name: legal-team",
+                            "    source: .",
+                            "    workspace: legal-team",
+                            "  - name: legal-contract-reader",
+                            "    source: agents/legal-contract-reader",
+                            "    workspace: legal-contract-reader",
+                            "  - name: legal-risk-reviewer",
+                            "    source: agents/legal-risk-reviewer",
+                            "    workspace: legal-risk-reviewer",
+                        ]
+                    ),
+                    "SOUL.md": "coordinator\n",
+                    "agents/legal-contract-reader/SOUL.md": "reader\n",
+                    "agents/legal-risk-reviewer/SOUL.md": "risk\n",
+                },
+            )
+            config_path = tmp_path / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"list": []}}), encoding="utf-8")
+
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+            result = manager.add_agents(
+                AddAgentsRequest(
+                    agents=[AddAgentRequest(agent_name="legal-team")],
+                    workspace_root=str(workspace_root),
+                )
+            )
+
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+            coordinator_soul = (workspace_root / "legal-team" / "SOUL.md").read_text(encoding="utf-8")
+            reader_soul = (workspace_root / "legal-contract-reader" / "SOUL.md").read_text(encoding="utf-8")
+            risk_soul = (workspace_root / "legal-risk-reviewer" / "SOUL.md").read_text(encoding="utf-8")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["requested_count"], 1)
+        self.assertEqual(result["added_count"], 3)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual(
+            [item["agent_name"] for item in result["agents"]],
+            ["legal-team", "legal-contract-reader", "legal-risk-reviewer"],
+        )
+        self.assertEqual(
+            runner.calls,
+            [
+                [
+                    "openclaw",
+                    "agents",
+                    "add",
+                    "legal-team",
+                    "--workspace",
+                    str((workspace_root / "legal-team").resolve()),
+                    "--non-interactive",
+                    "--json",
+                ],
+                [
+                    "openclaw",
+                    "agents",
+                    "add",
+                    "legal-contract-reader",
+                    "--workspace",
+                    str((workspace_root / "legal-contract-reader").resolve()),
+                    "--non-interactive",
+                    "--json",
+                ],
+                [
+                    "openclaw",
+                    "agents",
+                    "add",
+                    "legal-risk-reviewer",
+                    "--workspace",
+                    str((workspace_root / "legal-risk-reviewer").resolve()),
+                    "--non-interactive",
+                    "--json",
+                ],
+            ],
+        )
+        self.assertEqual(coordinator_soul, "coordinator\n")
+        self.assertEqual(reader_soul, "reader\n")
+        self.assertEqual(risk_soul, "risk\n")
+        self.assertEqual(
+            saved_config["tools"]["agentToAgent"],
+            {
+                "enabled": True,
+                "allow": ["main", "legal-team", "legal-contract-reader", "legal-risk-reviewer"],
+            },
+        )
+        self.assertEqual(result["steps"][0]["step"], "template.prepare[legal-team]")
+        self.assertEqual(result["steps"][1]["step"], "agents.add[legal-team]")
+        self.assertEqual(result["steps"][2]["step"], "workspace.populate[legal-team]")
+        self.assertEqual(result["steps"][3]["step"], "agents.add[legal-contract-reader]")
+        self.assertEqual(result["steps"][4]["step"], "workspace.populate[legal-contract-reader]")
+        self.assertEqual(result["steps"][5]["step"], "agents.add[legal-risk-reviewer]")
+        self.assertEqual(result["steps"][6]["step"], "workspace.populate[legal-risk-reviewer]")
+        self.assertEqual(result["steps"][7]["step"], "config.configure_tools")
+
     def test_add_agents_skips_existing_agent_and_keeps_running(self):
         runner = FakeRunner()
 
