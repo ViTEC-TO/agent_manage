@@ -19,12 +19,14 @@ python3 scripts/agentctl.py
 
 ### 行为说明
 
-- `template_name` 直接作为 `agent_name`
+- `template_name` 直接作为默认入口 `agent_name`
 - workspace 默认创建在 `~/data/{templateName}`，也可通过参数覆盖
 - 从 `~/template/{templateName}.zip` 解压到 `~/template/{templateName}/`
 - 如果模板含 `template.yaml.requiredLibraries`，会先检查每个依赖是否已安装；未安装时执行对应 `installCommand`，安装后再验证
 - 如果模板含 `common-skills/` 或 `template.yaml.commonSkillFolders`，会把其中的 skill 目录复制到 `~/.openclaw/skills/`，作为所有 agent 共用的 skill
 - 再把 `~/template/{templateName}/` 整体复制到 workspace
+- 如果模板声明 `copyMode: multi_agent_template` 或 `template.yaml.agents`，会把默认入口之外的 `agents/` 子目录作为团队成员继续执行
+  `openclaw agents add` 并分别复制到各自 workspace；普通单 agent 模板不受影响
 - 直接从 `openclaw.json` 的 `agents.list` 检查同名 agent 是否已存在
 - 如果同名 agent 已存在，会跳过 `openclaw agents add`，继续后续步骤
 - 如果 workspace 已存在且非空，会跳过 `workspace.populate`，继续后续步骤
@@ -45,7 +47,7 @@ python3 scripts/agentctl.py
 - 创建完成后会额外写入 `~/.openclaw/openclaw.json` 的工具默认配置：
   `tools.profile = coding`、`tools.exec.security = full`、
   `tools.web.search.enabled = false`、`tools.web.fetch.enabled = true`、
-  `tools.agentToAgent.enabled = true`、`tools.agentToAgent.allow` 包含 `main` 和当前 agent、
+  `tools.agentToAgent.enabled = true`、`tools.agentToAgent.allow` 包含 `main`、默认入口 agent 和多 agent 团队成员、
   `tools.sessions.visibility = all`
 - 如执行失败，默认按当前实现做回滚
 

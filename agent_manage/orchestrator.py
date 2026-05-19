@@ -93,6 +93,7 @@ class InstanceManagerV2:
         created_agent = False
         started_template_prepare = False
         created_workspace = False
+        additional_provisions: List[Dict[str, object]] = []
 
         try:
             provision_result = self._provision_agent_from_template(
@@ -109,6 +110,44 @@ class InstanceManagerV2:
             created_agent = bool(provision_result["created_agent"])
             started_template_prepare = bool(provision_result["started_template_prepare"])
             created_workspace = bool(provision_result["created_workspace"])
+
+            manifest = self._load_template_manifest(template_dir)
+            additional_specs = self._multi_agent_specs_from_template(
+                template_dir=template_dir,
+                manifest=manifest,
+                primary_agent_name=agent_name,
+                workspace_root=request.workspace_root,
+                fallback_model=request.model,
+            )
+            additional_agents: List[Dict[str, object]] = []
+            for spec in additional_specs:
+                spec_result = self._provision_agent_from_prepared_template(
+                    steps=steps,
+                    template_name=str(spec["template_name"]),
+                    agent_name=str(spec["agent_name"]),
+                    template_dir=Path(str(spec["template_dir"])),
+                    workspace=Path(str(spec["workspace"])),
+                    model=spec["model"] if isinstance(spec.get("model"), str) else None,
+                    rollback_on_fail=request.rollback_on_fail,
+                    step_scope=str(spec["agent_name"]),
+                )
+                additional_provisions.append(
+                    {
+                        "agent_name": spec["agent_name"],
+                        "workspace": spec["workspace"],
+                        "created_agent": spec_result["created_agent"],
+                        "created_workspace": spec_result["created_workspace"],
+                    }
+                )
+                additional_agents.append(
+                    {
+                        "agent_name": spec["agent_name"],
+                        "template_name": spec["template_name"],
+                        "source": spec["source"],
+                        "workspace": str(spec["workspace"]),
+                        "model": spec.get("model"),
+                    }
+                )
 
             fetched_models = self._run_timed_step(
                 steps,
@@ -136,13 +175,16 @@ class InstanceManagerV2:
             tools_result = self._run_timed_step(
                 steps,
                 "config.configure_tools",
-                lambda: self._configure_config_tools([agent_name]),
+                lambda: self._configure_config_tools(
+                    [agent_name, *[str(item["agent_name"]) for item in additional_agents]]
+                ),
             )
 
             return {
                 "ok": True,
                 "template_name": request.template_name,
                 "agent_name": agent_name,
+                "additional_agents": additional_agents,
                 "model_env": request.model_env,
                 "gateway_token": gateway_token,
                 "workspace": str(workspace),
@@ -152,10 +194,16 @@ class InstanceManagerV2:
             }
         except Exception as exc:
             payload = self._embedded_error_payload(exc)
-            if payload.get("rollback"):
+            if payload.get("rollback") and not (created_agent or created_workspace or additional_provisions):
                 raise
             rollback_steps: List[Dict[str, object]] = []
             if request.rollback_on_fail:
+                for item in reversed(additional_provisions):
+                    item_workspace = Path(str(item["workspace"]))
+                    if item.get("created_workspace") or (item.get("created_agent") and item_workspace.exists()):
+                        rollback_steps.append(self._safe_purge_workspace(item_workspace))
+                    if item.get("created_agent"):
+                        rollback_steps.append(self._safe_delete_agent(str(item["agent_name"])))
                 if created_workspace or (created_agent and workspace.exists()):
                     rollback_steps.append(self._safe_purge_workspace(workspace))
                 if created_agent:
@@ -931,7 +979,7 @@ class InstanceManagerV2:
         manifest: Dict[str, object] = {}
         current_key: Optional[str] = None
         current_item: Optional[Dict[str, object]] = None
-        list_keys = {"commonSkillFolders", "requiredLibraries"}
+        list_keys = {"agents", "commonSkillFolders", "requiredLibraries"}
 
         for raw_line in text.splitlines():
             stripped = raw_line.strip()
@@ -1030,6 +1078,90 @@ class InstanceManagerV2:
                 if item.is_dir():
                     add_source(str(item.relative_to(template_dir)))
         return sources
+
+    def _multi_agent_specs_from_template(
+        self,
+        *,
+        template_dir: Path,
+        manifest: Dict[str, object],
+        primary_agent_name: str,
+        workspace_root: str,
+        fallback_model: Optional[str],
+    ) -> List[Dict[str, object]]:
+        raw_agents = manifest.get("agents")
+        is_multi_agent = manifest.get("copyMode") == "multi_agent_template" or isinstance(raw_agents, list)
+        agents_dir = template_dir / "agents"
+        if not is_multi_agent:
+            return []
+
+        specs: List[Dict[str, object]] = []
+        seen = {primary_agent_name}
+
+        def add_spec(name_value: object, source_value: object = None, workspace_value: object = None, model_value: object = None) -> None:
+            source = str(source_value or "").strip()
+            if not source:
+                if not isinstance(name_value, str) or not name_value.strip():
+                    return
+                source = f"agents/{name_value.strip()}"
+            source_dir = (template_dir / source).resolve()
+            if source in {".", "./"} or source_dir == template_dir:
+                return
+
+            name = str(name_value or source_dir.name).strip()
+            if not name or name in seen:
+                return
+            seen.add(name)
+
+            specs.append(
+                {
+                    "agent_name": name,
+                    "template_name": name,
+                    "source": source,
+                    "template_dir": source_dir,
+                    "workspace": self._resolve_multi_agent_workspace(
+                        workspace_value=workspace_value,
+                        agent_name=name,
+                        workspace_root=workspace_root,
+                    ),
+                    "model": model_value if isinstance(model_value, str) and model_value.strip() else fallback_model,
+                }
+            )
+
+        if isinstance(raw_agents, list):
+            for item in raw_agents:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name") or item.get("agent_name")
+                add_spec(
+                    name_value=name,
+                    source_value=item.get("source"),
+                    workspace_value=item.get("workspace"),
+                    model_value=item.get("model"),
+                )
+
+        if agents_dir.is_dir():
+            for item in sorted(agents_dir.iterdir(), key=lambda entry: entry.name):
+                if item.is_dir():
+                    add_spec(
+                        name_value=item.name,
+                        source_value=str(item.relative_to(template_dir)),
+                        workspace_value=item.name,
+                    )
+
+        return specs
+
+    def _resolve_multi_agent_workspace(
+        self,
+        *,
+        workspace_value: object,
+        agent_name: str,
+        workspace_root: str,
+    ) -> Path:
+        workspace_name = str(workspace_value or agent_name).strip() or agent_name
+        workspace_path = Path(workspace_name).expanduser()
+        if workspace_path.is_absolute():
+            return workspace_path.resolve()
+        return Path(workspace_root).expanduser().resolve() / workspace_path
 
     def _ensure_required_libraries(
         self,
@@ -1476,6 +1608,126 @@ class InstanceManagerV2:
                             "agent_name": agent_name,
                             "workspace": str(workspace),
                             "archive_path": str(archive_path),
+                            "template_dir": str(template_dir),
+                        },
+                        "steps": steps,
+                        "rollback": rollback_steps,
+                    },
+                    ensure_ascii=False,
+                )
+            ) from exc
+
+    def _provision_agent_from_prepared_template(
+        self,
+        *,
+        steps: List[Dict[str, object]],
+        template_name: str,
+        agent_name: str,
+        template_dir: Path,
+        workspace: Path,
+        model: Optional[str],
+        rollback_on_fail: bool,
+        step_scope: Optional[str],
+    ) -> Dict[str, object]:
+        if not template_dir.is_dir():
+            raise FileNotFoundError(f"Agent template folder not found: {template_dir}")
+        workspace_has_content = self._workspace_has_content(workspace)
+        agent_exists = self._agent_exists(agent_name)
+
+        created_agent = False
+        created_workspace = False
+
+        try:
+            manifest = self._load_template_manifest(template_dir)
+            required_libraries = self._required_libraries_from_manifest(manifest)
+            if required_libraries:
+                self._run_timed_step(
+                    steps,
+                    self._scoped_step_name("libraries.ensure", step_scope),
+                    lambda: self._ensure_required_libraries(required_libraries),
+                )
+
+            common_skill_sources = self._common_skill_sources_from_manifest(
+                template_dir=template_dir,
+                manifest=manifest,
+            )
+            if common_skill_sources:
+                self._run_timed_step(
+                    steps,
+                    self._scoped_step_name("common_skills.install", step_scope),
+                    lambda: self._install_common_skills(common_skill_sources),
+                )
+
+            if agent_exists:
+                self.runner.log(f"agent exists, skip add: {agent_name}")
+                agent_result = {
+                    "skipped": True,
+                    "reason": "agent_exists",
+                    "agent_name": agent_name,
+                }
+                steps.append(
+                    self._build_step_payload(
+                        self._scoped_step_name("agents.add", step_scope),
+                        agent_result,
+                    )
+                )
+            else:
+                self._run_timed_step(
+                    steps,
+                    self._scoped_step_name("agents.add", step_scope),
+                    lambda: self._add_agent(
+                        agent_name=agent_name,
+                        workspace=workspace,
+                        model=model,
+                    ),
+                )
+                created_agent = True
+
+            if workspace_has_content:
+                self.runner.log(f"workspace not empty, skip populate: {workspace}")
+                workspace_result = {
+                    "skipped": True,
+                    "reason": "workspace_not_empty",
+                    "workspace": str(workspace),
+                }
+                steps.append(
+                    self._build_step_payload(
+                        self._scoped_step_name("workspace.populate", step_scope),
+                        workspace_result,
+                    )
+                )
+            else:
+                workspace_result = self._run_timed_step(
+                    steps,
+                    self._scoped_step_name("workspace.populate", step_scope),
+                    lambda: self._populate_workspace(
+                        template_dir=template_dir,
+                        workspace=workspace,
+                    ),
+                )
+                created_workspace = not workspace_result.get("skipped", False)
+
+            return {
+                "created_agent": created_agent,
+                "started_template_prepare": False,
+                "created_workspace": created_workspace,
+            }
+        except Exception as exc:
+            rollback_steps: List[Dict[str, object]] = []
+            if rollback_on_fail:
+                if created_workspace or (created_agent and workspace.exists()):
+                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                if created_agent:
+                    rollback_steps.append(self._safe_delete_agent(agent_name))
+            raise RuntimeError(
+                json.dumps(
+                    {
+                        "error": str(exc),
+                        "details": self._error_details(exc),
+                        "context": {
+                            "template_name": template_name,
+                            "agent_name": agent_name,
+                            "workspace": str(workspace),
                             "template_dir": str(template_dir),
                         },
                         "steps": steps,
