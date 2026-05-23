@@ -348,8 +348,8 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-tg-bot \
 - 直接从 `openclaw.json` 的 `agents.list` 检查目标 agent 是否存在
 - 新增或覆盖一个飞书/Lark bot 账号配置
 - `--domain feishu` 表示国内飞书，`--domain lark` 表示国际 Lark
-- 当前 bot 按 TG 的公开模式写入：
-  `dmPolicy = open`，`allowFrom = ["*"]`
+- 当前 bot 按公开模式写入 `channels.feishu.dmPolicy = open`，`channels.feishu.allowFrom = ["*"]`
+- 账号配置只写入 OpenClaw Feishu schema 支持的字段：`appId`、`appSecret`、`domain`、`name`、`enabled`
 - `appSecret` 写入实例服务器的 `~/.openclaw/openclaw.json`，状态接口只返回 `has_app_secret`
 - 会删除该账号名下旧的 Feishu binding，再写入一条新的 binding 指向指定 agent
 - 写入配置后会通过 `systemctl --user stop/start openclaw-gateway.service` 重启 gateway，并轮询进程退出和端口监听
@@ -416,6 +416,9 @@ cd ~/data/agent_manage && printf '%s' "$APP_SECRET" | python3 scripts/agentctl.p
       "config_path": "/root/.openclaw/openclaw.json",
       "changed_paths": [
         "channels.feishu.enabled",
+        "channels.feishu.domain",
+        "channels.feishu.dmPolicy",
+        "channels.feishu.allowFrom",
         "channels.feishu.accounts.main",
         "bindings"
       ]

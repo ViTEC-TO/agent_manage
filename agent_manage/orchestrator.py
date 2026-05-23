@@ -438,6 +438,10 @@ class InstanceManagerV2:
         config = self._load_config()
         feishu = config.setdefault("channels", {}).setdefault(self.FEISHU_CHANNEL_ID, {})
         feishu["enabled"] = True
+        feishu["domain"] = domain
+        feishu["dmPolicy"] = dm_policy
+        feishu["allowFrom"] = allow_from
+        feishu.setdefault("defaultAccount", account_id)
         accounts = feishu.setdefault("accounts", {})
         account_config = dict(accounts.get(account_id, {}))
         account_config.update(
@@ -445,12 +449,11 @@ class InstanceManagerV2:
                 "domain": domain,
                 "appId": app_id,
                 "appSecret": app_secret,
-                "dmPolicy": dm_policy,
-                "allowFrom": allow_from,
+                "enabled": True,
             }
         )
         if request.bot_name:
-            account_config["botName"] = request.bot_name
+            account_config["name"] = request.bot_name
         accounts[account_id] = account_config
 
         bindings = list(config.get("bindings", []))
@@ -481,6 +484,9 @@ class InstanceManagerV2:
             note=f"add feishu bot {account_id} for agent {request.agent_name}",
             changed_paths=[
                 f"channels.{self.FEISHU_CHANNEL_ID}.enabled",
+                f"channels.{self.FEISHU_CHANNEL_ID}.domain",
+                f"channels.{self.FEISHU_CHANNEL_ID}.dmPolicy",
+                f"channels.{self.FEISHU_CHANNEL_ID}.allowFrom",
                 f"channels.{self.FEISHU_CHANNEL_ID}.accounts.{account_id}",
                 "bindings",
             ],
@@ -684,12 +690,12 @@ class InstanceManagerV2:
                     "domain": account.get("domain", "feishu"),
                     "app_id": app_id,
                     "app_id_masked": self._mask_app_id(app_id),
-                    "bot_name": account.get("botName"),
-                    "enabled": bool(feishu.get("enabled", False)),
+                    "bot_name": account.get("name"),
+                    "enabled": bool(account.get("enabled", feishu.get("enabled", False))),
                     "binding_count": bound_count,
                     "is_bound": bound_count > 0,
-                    "dm_policy": account.get("dmPolicy"),
-                    "allow_from": account.get("allowFrom"),
+                    "dm_policy": feishu.get("dmPolicy"),
+                    "allow_from": feishu.get("allowFrom"),
                     "has_app_secret": bool(account.get("appSecret")),
                     "lark_cli_bound": self._is_lark_cli_app_bound(app_id),
                 }

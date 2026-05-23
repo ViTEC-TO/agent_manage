@@ -1125,15 +1125,18 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["account_id"], "main-bot")
             self.assertEqual(runner.calls, self.gateway_service_restart_calls)
+            self.assertEqual(saved["channels"]["feishu"]["domain"], "lark")
+            self.assertEqual(saved["channels"]["feishu"]["dmPolicy"], "open")
+            self.assertEqual(saved["channels"]["feishu"]["allowFrom"], ["*"])
+            self.assertEqual(saved["channels"]["feishu"]["defaultAccount"], "main-bot")
             self.assertEqual(
                 saved["channels"]["feishu"]["accounts"]["main-bot"],
                 {
                     "domain": "lark",
                     "appId": "cli_1234567890",
                     "appSecret": "secret",
-                    "dmPolicy": "open",
-                    "allowFrom": ["*"],
-                    "botName": "Lark Bot",
+                    "enabled": True,
+                    "name": "Lark Bot",
                 },
             )
             self.assertEqual(
@@ -1862,14 +1865,14 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "channels": {
                             "feishu": {
                                 "enabled": True,
+                                "dmPolicy": "open",
+                                "allowFrom": ["*"],
                                 "accounts": {
                                     "main": {
                                         "domain": "feishu",
                                         "appId": "cli_1234567890",
                                         "appSecret": "secret",
-                                        "botName": "客服飞书",
-                                        "dmPolicy": "open",
-                                        "allowFrom": ["*"],
+                                        "name": "客服飞书",
                                     },
                                     "idle": {
                                         "domain": "lark",
