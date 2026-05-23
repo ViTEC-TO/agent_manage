@@ -16,9 +16,11 @@ from .response import (
 from .models import (
     AddAgentRequest,
     AddAgentsRequest,
+    AddFeishuBotRequest,
     AddTelegramBotRequest,
     AddWeixinBotRequest,
     CreateInstanceRequest,
+    DeleteFeishuBotRequest,
     DeleteTelegramBotRequest,
     DeleteWeixinBotRequest,
     SetModelRequest,
@@ -59,6 +61,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_tg_bot.add_argument("--tg-token", required=True)
     add_tg_bot.add_argument("--bot-name")
 
+    add_feishu_bot = subparsers.add_parser("add-feishu-bot")
+    add_feishu_bot.add_argument("--agent", required=True)
+    add_feishu_bot.add_argument("--domain", choices=["feishu", "lark"], default="feishu")
+    add_feishu_bot.add_argument("--account-id", default="main")
+    add_feishu_bot.add_argument("--app-id", required=True)
+    add_feishu_bot_secret = add_feishu_bot.add_mutually_exclusive_group(required=True)
+    add_feishu_bot_secret.add_argument("--app-secret")
+    add_feishu_bot_secret.add_argument("--app-secret-stdin", action="store_true")
+    add_feishu_bot.add_argument("--bot-name")
+    add_feishu_bot.add_argument("--dm-policy", default="open")
+    add_feishu_bot.add_argument("--allow-from", action="append")
+    add_feishu_bot.add_argument("--bind-lark-cli", action="store_true")
+    add_feishu_bot.add_argument(
+        "--lark-cli-identity",
+        choices=["bot-only", "user-default"],
+        default="bot-only",
+    )
+
     add_weixin_bot = subparsers.add_parser("add-weixin-bot")
     add_weixin_bot.add_argument("--agent", required=True)
     add_weixin_bot.add_argument("--ilink-bot-id", required=True)
@@ -73,10 +93,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     tg_bot_status = subparsers.add_parser("tg-bot-status")
 
+    feishu_bot_status = subparsers.add_parser("feishu-bot-status")
+
     weixin_bot_status = subparsers.add_parser("weixin-bot-status")
 
     delete_tg_bot = subparsers.add_parser("delete-tg-bot")
     delete_tg_bot.add_argument("--bot-name", required=True)
+
+    delete_feishu_bot = subparsers.add_parser("delete-feishu-bot")
+    delete_feishu_bot.add_argument("--account-id", required=True)
 
     delete_weixin_bot = subparsers.add_parser("delete-weixin-bot")
     delete_weixin_bot.add_argument("--ilink-bot-id", required=True)
@@ -138,6 +163,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             print_json(build_success_response(result))
             return 0
+        if args.command == "add-feishu-bot":
+            result = client.add_feishu_bot(
+                AddFeishuBotRequest(
+                    agent_name=args.agent,
+                    domain=args.domain,
+                    account_id=args.account_id,
+                    app_id=args.app_id,
+                    app_secret=_read_secret_from_stdin()
+                    if args.app_secret_stdin
+                    else args.app_secret,
+                    bot_name=args.bot_name,
+                    dm_policy=args.dm_policy,
+                    allow_from=args.allow_from,
+                    bind_lark_cli=args.bind_lark_cli,
+                    lark_cli_identity=args.lark_cli_identity,
+                )
+            )
+            print_json(build_success_response(result))
+            return 0
         if args.command == "add-weixin-bot":
             result = client.add_weixin_bot(
                 AddWeixinBotRequest(
@@ -161,6 +205,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = client.get_tg_bot_status()
             print_json(build_success_response(result))
             return 0
+        if args.command == "feishu-bot-status":
+            result = client.get_feishu_bot_status()
+            print_json(build_success_response(result))
+            return 0
         if args.command == "weixin-bot-status":
             result = client.get_weixin_bot_status()
             print_json(build_success_response(result))
@@ -169,6 +217,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = client.delete_tg_bot(
                 DeleteTelegramBotRequest(
                     bot_name=args.bot_name,
+                )
+            )
+            print_json(build_success_response(result))
+            return 0
+        if args.command == "delete-feishu-bot":
+            result = client.delete_feishu_bot(
+                DeleteFeishuBotRequest(
+                    account_id=args.account_id,
                 )
             )
             print_json(build_success_response(result))
@@ -265,6 +321,10 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
             )
         )
     return agents
+
+
+def _read_secret_from_stdin() -> str:
+    return sys.stdin.read().strip()
 
 
 if __name__ == "__main__":

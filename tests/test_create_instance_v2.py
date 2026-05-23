@@ -9,9 +9,11 @@ from agent_manage.local import CommandError, CommandResult
 from agent_manage.models import (
     AddAgentsRequest,
     AddAgentRequest,
+    AddFeishuBotRequest,
     AddTelegramBotRequest,
     AddWeixinBotRequest,
     CreateInstanceRequest,
+    DeleteFeishuBotRequest,
     DeleteTelegramBotRequest,
     DeleteWeixinBotRequest,
     SetModelRequest,
@@ -1091,6 +1093,105 @@ class CreateInstanceV2Test(unittest.TestCase):
                 ],
             )
 
+    def test_add_feishu_bot_writes_public_binding(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "agents": {"list": [{"id": "base"}]},
+                        "bindings": [],
+                        "channels": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager.add_feishu_bot(
+                AddFeishuBotRequest(
+                    agent_name="base",
+                    domain="lark",
+                    account_id="Main Bot",
+                    app_id="cli_1234567890",
+                    app_secret="secret",
+                    bot_name="Lark Bot",
+                )
+            )
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["account_id"], "main-bot")
+            self.assertEqual(runner.calls, self.gateway_service_restart_calls)
+            self.assertEqual(
+                saved["channels"]["feishu"]["accounts"]["main-bot"],
+                {
+                    "domain": "lark",
+                    "appId": "cli_1234567890",
+                    "appSecret": "secret",
+                    "dmPolicy": "open",
+                    "allowFrom": ["*"],
+                    "botName": "Lark Bot",
+                },
+            )
+            self.assertEqual(
+                saved["bindings"],
+                [
+                    {
+                        "agentId": "base",
+                        "match": {
+                            "channel": "feishu",
+                            "accountId": "main-bot",
+                        },
+                    }
+                ],
+            )
+
+    def test_add_feishu_bot_can_bind_lark_cli(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "agents": {"list": [{"id": "base"}]},
+                        "bindings": [],
+                        "channels": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager.add_feishu_bot(
+                AddFeishuBotRequest(
+                    agent_name="base",
+                    app_id="cli_123",
+                    app_secret="secret",
+                    bind_lark_cli=True,
+                )
+            )
+
+            self.assertEqual(
+                runner.calls[0],
+                [
+                    "lark-cli",
+                    "config",
+                    "bind",
+                    "--source",
+                    "openclaw",
+                    "--app-id",
+                    "cli_123",
+                    "--identity",
+                    "bot-only",
+                ],
+            )
+            self.assertEqual(result["lark_cli_bind"]["step"], "lark-cli.config.bind")
+            self.assertEqual(runner.calls[1:], self.gateway_service_restart_calls)
+
     def test_add_agents_runs_non_interactive_add_for_each_requested_agent(self):
         runner = FakeRunner()
 
@@ -1740,6 +1841,61 @@ class CreateInstanceV2Test(unittest.TestCase):
                 ["idlebot", "otherbot", "publicbot"],
             )
 
+    def test_get_feishu_bot_status_returns_bound_bot_count_without_secret(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "bindings": [
+                            {
+                                "agentId": "base",
+                                "match": {"channel": "feishu", "accountId": "main"},
+                            },
+                            {
+                                "agentId": "demo",
+                                "match": {"channel": "feishu", "accountId": "main"},
+                            },
+                        ],
+                        "channels": {
+                            "feishu": {
+                                "enabled": True,
+                                "accounts": {
+                                    "main": {
+                                        "domain": "feishu",
+                                        "appId": "cli_1234567890",
+                                        "appSecret": "secret",
+                                        "botName": "客服飞书",
+                                        "dmPolicy": "open",
+                                        "allowFrom": ["*"],
+                                    },
+                                    "idle": {
+                                        "domain": "lark",
+                                        "appId": "cli_idle",
+                                    },
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager.get_feishu_bot_status()
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["feishu_bot_count"], 2)
+            self.assertEqual(result["bound_feishu_bot_count"], 1)
+            self.assertEqual(result["total_binding_count"], 2)
+            self.assertEqual(result["bots"][1]["account_id"], "main")
+            self.assertEqual(result["bots"][1]["binding_count"], 2)
+            self.assertTrue(result["bots"][1]["has_app_secret"])
+            self.assertNotIn("app_secret", result["bots"][1])
+            self.assertEqual(result["bots"][1]["app_id_masked"], "cli_123****7890")
+
     def test_add_weixin_bot_writes_state_config_and_binding(self):
         runner = FakeRunner()
 
@@ -2099,6 +2255,60 @@ class CreateInstanceV2Test(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_delete_feishu_bot_removes_account_and_bindings(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "bindings": [
+                            {
+                                "agentId": "base",
+                                "match": {"channel": "feishu", "accountId": "main"},
+                            },
+                            {
+                                "agentId": "other",
+                                "match": {"channel": "feishu", "accountId": "other"},
+                            },
+                        ],
+                        "channels": {
+                            "feishu": {
+                                "enabled": True,
+                                "accounts": {
+                                    "main": {"appId": "cli_main", "appSecret": "secret"},
+                                    "other": {"appId": "cli_other", "appSecret": "secret"},
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager.delete_feishu_bot(DeleteFeishuBotRequest(account_id="main"))
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["removed_bindings"], 1)
+            self.assertEqual(result["remaining_feishu_bot_count"], 1)
+            self.assertNotIn("main", saved["channels"]["feishu"]["accounts"])
+            self.assertEqual(
+                saved["bindings"],
+                [
+                    {
+                        "agentId": "other",
+                        "match": {
+                            "channel": "feishu",
+                            "accountId": "other",
+                        },
+                    }
+                ],
+            )
+            self.assertEqual(runner.calls, self.gateway_service_restart_calls)
 
     def test_delete_tg_bot_requires_existing_bot(self):
         runner = FakeRunner()

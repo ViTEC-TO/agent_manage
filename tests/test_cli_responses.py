@@ -160,6 +160,78 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["result"]["weixin_bot_count"], 2)
 
+    def test_agent_manage_feishu_bot_status_uses_result_envelope(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.get_feishu_bot_status.return_value = {
+                "ok": True,
+                "feishu_bot_count": 2,
+                "bound_feishu_bot_count": 1,
+            }
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(["feishu-bot-status"])
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["result"]["feishu_bot_count"], 2)
+
+    def test_agent_manage_add_feishu_bot_dispatches_correctly(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_feishu_bot.return_value = {
+                "ok": True,
+                "account_id": "main",
+            }
+
+            stdout = io.StringIO()
+            with patch("sys.stdin", io.StringIO("secret\n")), redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "add-feishu-bot",
+                        "--agent",
+                        "unipay-claw-base",
+                        "--domain",
+                        "lark",
+                        "--account-id",
+                        "main",
+                        "--app-id",
+                        "cli_123",
+                        "--app-secret-stdin",
+                        "--bot-name",
+                        "Lark Bot",
+                        "--bind-lark-cli",
+                    ]
+                )
+
+        request = manager_cls.return_value.add_feishu_bot.call_args.args[0]
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["result"]["account_id"], "main")
+        self.assertEqual(request.domain, "lark")
+        self.assertEqual(request.app_secret, "secret")
+        self.assertTrue(request.bind_lark_cli)
+
+    def test_agent_manage_delete_feishu_bot_dispatches_correctly(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.delete_feishu_bot.return_value = {
+                "ok": True,
+                "deleted_account_id": "main",
+            }
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "delete-feishu-bot",
+                        "--account-id",
+                        "main",
+                    ]
+                )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["result"]["deleted_account_id"], "main")
+
     def test_agent_manage_add_weixin_bot_dispatches_correctly(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
             manager_cls.return_value.add_weixin_bot.return_value = {

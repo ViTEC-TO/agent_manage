@@ -17,9 +17,11 @@ from .local import CommandError, LocalRunner
 from .models import (
     AddAgentRequest,
     AddAgentsRequest,
+    AddFeishuBotRequest,
     AddTelegramBotRequest,
     AddWeixinBotRequest,
     CreateInstanceRequest,
+    DeleteFeishuBotRequest,
     DeleteTelegramBotRequest,
     DeleteWeixinBotRequest,
     SetModelRequest,
@@ -35,6 +37,8 @@ class InstanceManagerV2:
     GATEWAY_PORT = "18889"
     LIBRARY_VERIFY_TIMEOUT_SECONDS = 30
     LIBRARY_INSTALL_TIMEOUT_SECONDS = 600
+    FEISHU_CHANNEL_ID = "feishu"
+    FEISHU_DOMAINS = {"feishu", "lark"}
     WEIXIN_PLUGIN_ID = "openclaw-weixin"
     WEIXIN_PLUGIN_PACKAGE = "@tencent-weixin/openclaw-weixin"
     WEIXIN_DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -417,6 +421,97 @@ class InstanceManagerV2:
             "gateway_restart": self._build_step_payload("gateway.restart", restart_result),
         }
 
+    def add_feishu_bot(self, request: AddFeishuBotRequest) -> Dict[str, object]:
+        self._ensure_agent_exists_in_config(request.agent_name)
+
+        account_id = self._normalize_feishu_account_id(request.account_id)
+        domain = self._normalize_feishu_domain(request.domain)
+        app_id = request.app_id.strip()
+        app_secret = request.app_secret.strip()
+        dm_policy = request.dm_policy.strip() or "open"
+        allow_from = self._normalize_allow_from(request.allow_from)
+        if not app_id:
+            raise ValueError("app_id is required")
+        if not app_secret:
+            raise ValueError("app_secret is required")
+
+        config = self._load_config()
+        feishu = config.setdefault("channels", {}).setdefault(self.FEISHU_CHANNEL_ID, {})
+        feishu["enabled"] = True
+        accounts = feishu.setdefault("accounts", {})
+        account_config = dict(accounts.get(account_id, {}))
+        account_config.update(
+            {
+                "domain": domain,
+                "appId": app_id,
+                "appSecret": app_secret,
+                "dmPolicy": dm_policy,
+                "allowFrom": allow_from,
+            }
+        )
+        if request.bot_name:
+            account_config["botName"] = request.bot_name
+        accounts[account_id] = account_config
+
+        bindings = list(config.get("bindings", []))
+        filtered = []
+        removed = 0
+        for item in bindings:
+            match = item.get("match", {})
+            if (
+                match.get("channel") == self.FEISHU_CHANNEL_ID
+                and match.get("accountId") == account_id
+            ):
+                removed += 1
+                continue
+            filtered.append(item)
+        filtered.append(
+            {
+                "agentId": request.agent_name,
+                "match": {
+                    "channel": self.FEISHU_CHANNEL_ID,
+                    "accountId": account_id,
+                },
+            }
+        )
+        config["bindings"] = filtered
+
+        write_result = self._write_config(
+            config,
+            note=f"add feishu bot {account_id} for agent {request.agent_name}",
+            changed_paths=[
+                f"channels.{self.FEISHU_CHANNEL_ID}.enabled",
+                f"channels.{self.FEISHU_CHANNEL_ID}.accounts.{account_id}",
+                "bindings",
+            ],
+            extra={
+                "binding_agent": request.agent_name,
+                "removed_existing_bindings": removed,
+            },
+        )
+
+        bind_result = None
+        if request.bind_lark_cli:
+            bind_result = self._bind_lark_cli_feishu_app(
+                app_id=app_id,
+                identity=request.lark_cli_identity,
+            )
+
+        restart_result = self._restart_gateway_service()
+        return {
+            "ok": True,
+            "agent_name": request.agent_name,
+            "account_id": account_id,
+            "domain": domain,
+            "app_id": app_id,
+            "bot_name": request.bot_name,
+            "dm_policy": dm_policy,
+            "allow_from": allow_from,
+            "config_write": write_result,
+            "lark_cli_bind": bind_result,
+            "gateway_restart": self._build_step_payload("gateway.restart", restart_result),
+        }
+
     def add_weixin_bot(self, request: AddWeixinBotRequest) -> Dict[str, object]:
         self._ensure_agent_exists_in_config(request.agent_name)
         normalized_account_id = self._normalize_weixin_account_id(request.ilink_bot_id)
@@ -506,6 +601,7 @@ class InstanceManagerV2:
             timeout=self.SERVER_STATUS_TIMEOUT_SECONDS,
         )
         tg_bot_status = self.get_tg_bot_status()
+        feishu_bot_status = self.get_feishu_bot_status()
         weixin_bot_status = self.get_weixin_bot_status()
         current_model_status = self.get_current_model()
 
@@ -517,6 +613,7 @@ class InstanceManagerV2:
             "config_exists": self.config_path.exists(),
             "gateway_status": self._summarize_gateway_status(gateway_status),
             "tg_bot_status": tg_bot_status,
+            "feishu_bot_status": feishu_bot_status,
             "weixin_bot_status": weixin_bot_status,
             "current_model_status": current_model_status,
         }
@@ -556,6 +653,53 @@ class InstanceManagerV2:
             "telegram_enabled": bool(telegram.get("enabled", False)),
             "tg_bot_count": len(accounts),
             "bound_tg_bot_count": sum(1 for item in bots if item["is_bound"]),
+            "total_binding_count": sum(binding_counts.values()),
+            "bots": bots,
+        }
+
+    def get_feishu_bot_status(self) -> Dict[str, object]:
+        config = self._load_config()
+        feishu = config.get("channels", {}).get(self.FEISHU_CHANNEL_ID, {})
+        accounts = feishu.get("accounts", {})
+        bindings = list(config.get("bindings", []))
+
+        binding_counts: Dict[str, int] = {}
+        for item in bindings:
+            match = item.get("match", {})
+            if match.get("channel") != self.FEISHU_CHANNEL_ID:
+                continue
+            account_id = match.get("accountId")
+            if not account_id:
+                continue
+            binding_counts[account_id] = binding_counts.get(account_id, 0) + 1
+
+        bots: List[Dict[str, object]] = []
+        for account_id in sorted(accounts.keys()):
+            account = accounts.get(account_id, {})
+            bound_count = binding_counts.get(account_id, 0)
+            app_id = account.get("appId")
+            bots.append(
+                {
+                    "account_id": account_id,
+                    "domain": account.get("domain", "feishu"),
+                    "app_id": app_id,
+                    "app_id_masked": self._mask_app_id(app_id),
+                    "bot_name": account.get("botName"),
+                    "enabled": bool(feishu.get("enabled", False)),
+                    "binding_count": bound_count,
+                    "is_bound": bound_count > 0,
+                    "dm_policy": account.get("dmPolicy"),
+                    "allow_from": account.get("allowFrom"),
+                    "has_app_secret": bool(account.get("appSecret")),
+                    "lark_cli_bound": self._is_lark_cli_app_bound(app_id),
+                }
+            )
+
+        return {
+            "ok": True,
+            "feishu_enabled": bool(feishu.get("enabled", False)),
+            "feishu_bot_count": len(accounts),
+            "bound_feishu_bot_count": sum(1 for item in bots if item["is_bound"]),
             "total_binding_count": sum(binding_counts.values()),
             "bots": bots,
         }
@@ -603,6 +747,55 @@ class InstanceManagerV2:
             "removed_bindings": removed_bindings,
             "remaining_tg_bot_count": len(accounts),
             "config_write": write_result,
+        }
+
+    def delete_feishu_bot(self, request: DeleteFeishuBotRequest) -> Dict[str, object]:
+        account_id = self._normalize_feishu_account_id(request.account_id)
+
+        config = self._load_config()
+        feishu = config.setdefault("channels", {}).setdefault(self.FEISHU_CHANNEL_ID, {})
+        accounts = feishu.setdefault("accounts", {})
+        if account_id not in accounts:
+            raise FileNotFoundError(f"Feishu account '{account_id}' not found")
+        del accounts[account_id]
+
+        bindings = list(config.get("bindings", []))
+        filtered = []
+        removed_bindings = 0
+        for item in bindings:
+            match = item.get("match", {})
+            if (
+                match.get("channel") == self.FEISHU_CHANNEL_ID
+                and match.get("accountId") == account_id
+            ):
+                removed_bindings += 1
+                continue
+            filtered.append(item)
+        config["bindings"] = filtered
+        feishu["enabled"] = bool(accounts)
+
+        write_result = self._write_config(
+            config,
+            note=f"delete feishu bot {account_id}",
+            changed_paths=[
+                f"channels.{self.FEISHU_CHANNEL_ID}.accounts.{account_id}",
+                "bindings",
+                f"channels.{self.FEISHU_CHANNEL_ID}.enabled",
+            ],
+            extra={
+                "removed_bindings": removed_bindings,
+                "remaining_feishu_bot_count": len(accounts),
+            },
+        )
+        restart_result = self._restart_gateway_service()
+
+        return {
+            "ok": True,
+            "deleted_account_id": account_id,
+            "removed_bindings": removed_bindings,
+            "remaining_feishu_bot_count": len(accounts),
+            "config_write": write_result,
+            "gateway_restart": self._build_step_payload("gateway.restart", restart_result),
         }
 
     def get_weixin_bot_status(self) -> Dict[str, object]:
@@ -2123,6 +2316,88 @@ class InstanceManagerV2:
         if value is None:
             return 0
         return float(value)
+
+    def _normalize_feishu_account_id(self, account_id: str) -> str:
+        value = account_id.strip()
+        if not value:
+            raise ValueError("account_id is required")
+        normalized = []
+        last_dash = False
+        for char in value.lower():
+            if char.isalnum():
+                normalized.append(char)
+                last_dash = False
+                continue
+            if not last_dash:
+                normalized.append("-")
+                last_dash = True
+        result = "".join(normalized).strip("-")
+        if not result:
+            raise ValueError("Invalid Feishu account id")
+        return result
+
+    def _normalize_feishu_domain(self, domain: str) -> str:
+        value = domain.strip().lower()
+        if value not in self.FEISHU_DOMAINS:
+            raise ValueError("domain must be feishu or lark")
+        return value
+
+    def _normalize_allow_from(self, allow_from: Optional[List[str]]) -> List[str]:
+        if not allow_from:
+            return ["*"]
+        values: List[str] = []
+        for raw in allow_from:
+            for item in raw.split(","):
+                value = item.strip()
+                if value and value not in values:
+                    values.append(value)
+        return values or ["*"]
+
+    def _bind_lark_cli_feishu_app(self, app_id: str, identity: str) -> Dict[str, object]:
+        if identity not in {"bot-only", "user-default"}:
+            raise ValueError("lark_cli_identity must be bot-only or user-default")
+        result = self.runner.run(
+            [
+                "lark-cli",
+                "config",
+                "bind",
+                "--source",
+                "openclaw",
+                "--app-id",
+                app_id,
+                "--identity",
+                identity,
+            ],
+            timeout=self.SERVER_STATUS_TIMEOUT_SECONDS,
+        )
+        return self._command_step("lark-cli.config.bind", result)
+
+    def _mask_app_id(self, app_id: object) -> Optional[str]:
+        if not isinstance(app_id, str) or not app_id:
+            return None
+        if len(app_id) <= 10:
+            return app_id
+        return f"{app_id[:7]}****{app_id[-4:]}"
+
+    def _is_lark_cli_app_bound(self, app_id: object) -> bool:
+        if not isinstance(app_id, str) or not app_id:
+            return False
+        config_path = Path.home() / ".lark-cli" / "config.json"
+        if not config_path.exists():
+            return False
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if config.get("appId") == app_id:
+            return True
+        apps = config.get("apps")
+        if isinstance(apps, dict):
+            return any(
+                isinstance(value, dict) and value.get("appId") == app_id
+                for value in apps.values()
+            )
+        return False
 
     def _normalize_weixin_account_id(self, account_id: str) -> str:
         normalized = []

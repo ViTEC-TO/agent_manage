@@ -35,6 +35,20 @@ class AddTelegramBotRequest:
 
 
 @dataclass
+class AddFeishuBotRequest:
+    agent_name: str
+    app_id: str
+    app_secret: str
+    domain: str = "feishu"
+    account_id: str = "main"
+    bot_name: str | None = None
+    dm_policy: str = "open"
+    allow_from: list[str] | None = None
+    bind_lark_cli: bool = False
+    lark_cli_identity: str = "bot-only"
+
+
+@dataclass
 class AddWeixinBotRequest:
     agent_name: str
     ilink_bot_id: str
@@ -49,6 +63,11 @@ class AddWeixinBotRequest:
 @dataclass
 class DeleteTelegramBotRequest:
     bot_name: str
+
+
+@dataclass
+class DeleteFeishuBotRequest:
+    account_id: str
 
 
 @dataclass

@@ -341,6 +341,181 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-tg-bot \
 }
 ```
 
+## add-feishu-bot
+
+### 行为说明
+
+- 直接从 `openclaw.json` 的 `agents.list` 检查目标 agent 是否存在
+- 新增或覆盖一个飞书/Lark bot 账号配置
+- `--domain feishu` 表示国内飞书，`--domain lark` 表示国际 Lark
+- 当前 bot 按 TG 的公开模式写入：
+  `dmPolicy = open`，`allowFrom = ["*"]`
+- `appSecret` 写入实例服务器的 `~/.openclaw/openclaw.json`，状态接口只返回 `has_app_secret`
+- 会删除该账号名下旧的 Feishu binding，再写入一条新的 binding 指向指定 agent
+- 写入配置后会通过 `systemctl --user stop/start openclaw-gateway.service` 重启 gateway，并轮询进程退出和端口监听
+- 可选 `--bind-lark-cli`，用于执行 `lark-cli config bind --source openclaw --app-id <appId> --identity bot-only`
+
+### 远程执行
+
+推荐用 stdin 传 `appSecret`，避免进入 shell history 或进程参数：
+
+```bash
+cd ~/data/agent_manage && printf '%s' "$APP_SECRET" | python3 scripts/agentctl.py add-feishu-bot \
+  --agent unipay-claw-base \
+  --domain feishu \
+  --account-id main \
+  --app-id cli_xxx \
+  --app-secret-stdin \
+  --bot-name "客服飞书" \
+  --bind-lark-cli
+```
+
+可选参数：
+
+- `--domain`：`feishu` 或 `lark`，默认 `feishu`
+- `--account-id`：OpenClaw 内部账号名，默认 `main`
+- `--bot-name`
+- `--dm-policy`：默认 `open`
+- `--allow-from`：可重复传；不传默认 `*`
+- `--bind-lark-cli`
+- `--lark-cli-identity`：`bot-only` 或 `user-default`，默认 `bot-only`
+- `--config-path`
+- `--openclaw-bin`
+- `--project-dir`
+- `--dry-run`
+
+### Output
+
+成功时 `result` 里主要返回：
+
+- `agent_name`
+- `account_id`
+- `domain`
+- `app_id`
+- `bot_name`
+- `dm_policy`
+- `allow_from`
+- `config_write`
+- `lark_cli_bind`
+- `gateway_restart`
+
+示例：
+
+```json
+{
+  "result": {
+    "ok": true,
+    "agent_name": "unipay-claw-base",
+    "account_id": "main",
+    "domain": "feishu",
+    "app_id": "cli_xxx",
+    "bot_name": "客服飞书",
+    "dm_policy": "open",
+    "allow_from": ["*"],
+    "config_write": {
+      "config_path": "/root/.openclaw/openclaw.json",
+      "changed_paths": [
+        "channels.feishu.enabled",
+        "channels.feishu.accounts.main",
+        "bindings"
+      ]
+    },
+    "lark_cli_bind": {
+      "step": "lark-cli.config.bind"
+    },
+    "gateway_restart": {
+      "step": "gateway.restart",
+      "result": {
+        "method": "systemctl_user_stop_start",
+        "service": "openclaw-gateway.service",
+        "port": "18889"
+      }
+    }
+  },
+  "error": null,
+  "typeCode": 1,
+  "message": "OK",
+  "serverTimeStamp": "2026-05-24 02:00:00"
+}
+```
+
+## feishu-bot-status
+
+### 行为说明
+
+- 读取当前 `~/.openclaw/openclaw.json`
+- 返回当前已登记的飞书/Lark bot 总数 `feishu_bot_count`
+- 返回当前已绑定的飞书/Lark bot 数 `bound_feishu_bot_count`
+- 返回所有飞书/Lark bindings 总数 `total_binding_count`
+- 不返回 `appSecret` 明文，只返回 `has_app_secret`
+- 同时尽力读取 `~/.lark-cli/config.json`，补充 `lark_cli_bound`
+
+### 远程执行
+
+```bash
+cd ~/data/agent_manage && python3 scripts/agentctl.py feishu-bot-status
+```
+
+### Output
+
+成功时 `result` 里主要返回：
+
+- `feishu_enabled`
+- `feishu_bot_count`
+- `bound_feishu_bot_count`
+- `total_binding_count`
+- `bots`
+
+示例：
+
+```json
+{
+  "result": {
+    "ok": true,
+    "feishu_enabled": true,
+    "feishu_bot_count": 1,
+    "bound_feishu_bot_count": 1,
+    "total_binding_count": 1,
+    "bots": [
+      {
+        "account_id": "main",
+        "domain": "feishu",
+        "app_id": "cli_xxx",
+        "app_id_masked": "cli_xxx****abcd",
+        "bot_name": "客服飞书",
+        "enabled": true,
+        "binding_count": 1,
+        "is_bound": true,
+        "dm_policy": "open",
+        "allow_from": ["*"],
+        "has_app_secret": true,
+        "lark_cli_bound": true
+      }
+    ]
+  },
+  "error": null,
+  "typeCode": 1,
+  "message": "OK",
+  "serverTimeStamp": "2026-05-24 02:00:00"
+}
+```
+
+## delete-feishu-bot
+
+### 行为说明
+
+- 按 `account_id` 删除 `channels.feishu.accounts.{accountId}`
+- 同时删除所有引用该账号的 Feishu bindings
+- 如果删完后没有剩余 bot，会把 `channels.feishu.enabled` 设为 `false`
+- 写入配置后会重启 gateway
+
+### 远程执行
+
+```bash
+cd ~/data/agent_manage && python3 scripts/agentctl.py delete-feishu-bot \
+  --account-id main
+```
+
 ## check-server-status
 
 ### 行为说明
@@ -348,7 +523,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-tg-bot \
 - 执行 `openclaw gateway status --require-rpc --json`
 - 默认 10 秒超时，避免等待太久同时减少误判
 - 只有当 gateway 服务和 RPC probe 都正常时，才认为服务器和 `openclaw` 可工作
-- 同时读取一次当前 TG bot 状态、当前微信 bot 状态、当前配置模型，一并放进返回体
+- 同时读取一次当前 TG bot 状态、当前飞书/Lark bot 状态、当前微信 bot 状态、当前配置模型，一并放进返回体
 
 ### 远程执行
 
@@ -373,6 +548,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py check-server-status
 - `config_exists`
 - `gateway_status`
 - `tg_bot_status`
+- `feishu_bot_status`
 - `weixin_bot_status`
 - `current_model_status`
 
