@@ -2131,7 +2131,7 @@ class InstanceManagerV2:
                 "name": display_name,
                 "contextWindow": context_window,
                 "maxTokens": self.DEFAULT_MODEL_MAX_TOKENS,
-                "input": ["text"],
+                "input": ["text", "image"],
                 "cost": {
                     "input": self._to_number(item.get("inputTokenPrice")),
                     "output": self._to_number(item.get("outputTokenPrice")),
