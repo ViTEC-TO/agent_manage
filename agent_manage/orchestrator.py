@@ -50,8 +50,8 @@ class InstanceManagerV2:
             "catalog_url": "https://unitag.dola.fi/aigateway/api/frontend/aimodels",
         },
         "cn": {
-            "base_url": "https://api.youhlhl.com/aigateway/v1",
-            "catalog_url": "https://api.youhlhl.com/aigateway/api/frontend/aimodels",
+            "base_url": "https://api.dolaio.cn/aigateway/v1",
+            "catalog_url": "https://api.dolaio.cn/aigateway/api/frontend/aimodels",
         },
     }
     MODEL_CATALOG_URL = MODEL_GATEWAYS[DEFAULT_MODEL_ENV]["catalog_url"]

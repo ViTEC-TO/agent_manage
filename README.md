@@ -33,8 +33,8 @@ python3 scripts/agentctl.py
 - `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 的
   `models.providers.unipay-fun.apiKey`
 - `--model-env` 默认为 `test`；传 `cn` 时会使用
-  `https://api.youhlhl.com/aigateway/v1` 作为模型调用地址，并从
-  `https://api.youhlhl.com/aigateway/api/frontend/aimodels` 拉取模型目录
+  `https://api.dolaio.cn/aigateway/v1` 作为模型调用地址，并从
+  `https://api.dolaio.cn/aigateway/api/frontend/aimodels` 拉取模型目录
 - 创建时会生成新的 `gateway_token`，写入 `gateway.auth.token`，并在返回结果里带回
 - 默认 `test` 环境创建时会先从
   `https://unitag.dola.fi/aigateway/api/frontend/aimodels`

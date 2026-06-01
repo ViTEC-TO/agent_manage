@@ -549,10 +549,10 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result["base_url"], "https://api.youhlhl.com/aigateway/v1")
+        self.assertEqual(result["base_url"], "https://api.dolaio.cn/aigateway/v1")
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-            "https://api.youhlhl.com/aigateway/v1",
+            "https://api.dolaio.cn/aigateway/v1",
         )
         self.assertEqual(saved_config["models"]["providers"]["unipay-fun"]["apiKey"], "cn-key")
 
@@ -2450,7 +2450,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "models": {
                             "providers": {
                                 "unipay-fun": {
-                                    "baseUrl": "https://api.youhlhl.com/aigateway/v1",
+                                    "baseUrl": "https://api.dolaio.cn/aigateway/v1",
                                     "apiKey": "test-key",
                                     "models": [],
                                 }
@@ -2478,7 +2478,7 @@ class CreateInstanceV2Test(unittest.TestCase):
         )
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-            "https://api.youhlhl.com/aigateway/v1",
+            "https://api.dolaio.cn/aigateway/v1",
         )
         self.assertEqual(result["steps"][0]["step"], "models.fetch_catalog")
         self.assertEqual(result["steps"][1]["step"], "config.configure_models")
