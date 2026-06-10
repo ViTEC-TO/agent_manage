@@ -67,6 +67,17 @@ class InstanceManagerV2:
         "gpt-5.4-mini",
         "gpt-5-nano",
     )
+    OPENCLAW_PROVIDER_CONFIG_KEYS = ("baseUrl", "api", "apiKey", "models")
+    OPENCLAW_MODEL_DEFINITION_KEYS = (
+        "id",
+        "name",
+        "contextWindow",
+        "maxTokens",
+        "input",
+        "cost",
+        "reasoning",
+    )
+    OPENCLAW_MODEL_COST_KEYS = ("input", "output", "cacheRead", "cacheWrite")
 
     def __init__(
         self,
@@ -2159,7 +2170,8 @@ class InstanceManagerV2:
         models_config: Dict[str, object],
         source_url: str,
     ) -> Dict[str, object]:
-        providers = models_config.get("providers")
+        openclaw_models_config = self._sanitize_openclaw_models_config(models_config)
+        providers = openclaw_models_config.get("providers")
         if not isinstance(providers, dict):
             raise ValueError("Model catalog response missing providers")
 
@@ -2195,8 +2207,65 @@ class InstanceManagerV2:
             "model_count": len(models),
             "models": models,
             "primary_model": self._select_primary_model_ref(models),
-            "models_config": models_config,
+            "models_config": openclaw_models_config,
         }
+
+    def _sanitize_openclaw_models_config(self, models_config: Dict[str, object]) -> Dict[str, object]:
+        providers = models_config.get("providers")
+        if not isinstance(providers, dict):
+            raise ValueError("Model catalog response missing providers")
+
+        sanitized: Dict[str, object] = {}
+        if "mode" in models_config:
+            sanitized["mode"] = deepcopy(models_config["mode"])
+
+        sanitized_providers: Dict[str, Dict[str, object]] = {}
+        for provider_key, provider_config in providers.items():
+            provider_name = str(provider_key).strip()
+            if not provider_name or not isinstance(provider_config, dict):
+                continue
+
+            sanitized_provider: Dict[str, object] = {}
+            for key in self.OPENCLAW_PROVIDER_CONFIG_KEYS:
+                if key == "models":
+                    continue
+                if key in provider_config:
+                    sanitized_provider[key] = deepcopy(provider_config[key])
+
+            definitions = provider_config.get("models")
+            if isinstance(definitions, list):
+                sanitized_provider["models"] = [
+                    sanitized_definition
+                    for definition in definitions
+                    if isinstance(definition, dict)
+                    for sanitized_definition in [
+                        self._sanitize_openclaw_model_definition(definition)
+                    ]
+                    if sanitized_definition
+                ]
+
+            sanitized_providers[provider_name] = sanitized_provider
+
+        sanitized["providers"] = sanitized_providers
+        return sanitized
+
+    def _sanitize_openclaw_model_definition(self, definition: Dict[str, object]) -> Dict[str, object]:
+        sanitized = {
+            key: deepcopy(definition[key])
+            for key in self.OPENCLAW_MODEL_DEFINITION_KEYS
+            if key in definition
+        }
+        if "name" not in sanitized and isinstance(definition.get("displayName"), str):
+            sanitized["name"] = definition["displayName"]
+
+        cost = sanitized.get("cost")
+        if isinstance(cost, dict):
+            sanitized["cost"] = {
+                key: deepcopy(cost[key])
+                for key in self.OPENCLAW_MODEL_COST_KEYS
+                if key in cost
+            }
+        return sanitized
 
     def _model_gateway_for_env(self, model_env: Optional[str]) -> Dict[str, str]:
         resolved_env = (model_env or self.DEFAULT_MODEL_ENV).strip()

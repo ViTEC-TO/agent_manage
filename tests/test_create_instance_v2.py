@@ -241,6 +241,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             "mode": "merge",
             "providers": {
                 "dolaio": {
+                    "displayName": "Dola.io",
                     "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
                     "api": "openai-completions",
                     "apiKey": "",
@@ -253,10 +254,12 @@ class CreateInstanceV2Test(unittest.TestCase):
                             "input": ["text", "image"],
                             "cost": {"input": 0.34, "output": 2.04, "cacheRead": 0.034, "cacheWrite": 0.42},
                             "reasoning": True,
+                            "discount": 0.9,
                         }
                     ],
                 },
                 "official": {
+                    "displayName": "Official",
                     "baseUrl": "https://unitag.dola.fi/aigateway/v1",
                     "api": "openai-completions",
                     "apiKey": "",
@@ -269,6 +272,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                             "input": ["text", "image"],
                             "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
                             "reasoning": True,
+                            "discount": 1,
                         }
                     ],
                 },
@@ -289,18 +293,35 @@ class CreateInstanceV2Test(unittest.TestCase):
                     "id": "deepseek-v4-flash",
                     "provider": "official",
                     "model_ref": "official/deepseek-v4-flash",
-                    "definition": models_config["providers"]["official"]["models"][0],
+                    "definition": {
+                        "id": "deepseek-v4-flash",
+                        "name": "DeepSeek V4 Flash",
+                        "contextWindow": 1000000,
+                        "maxTokens": 128000,
+                        "input": ["text", "image"],
+                        "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
+                        "reasoning": True,
+                    },
                 },
                 {
                     "id": "gpt-5.4",
                     "provider": "dolaio",
                     "model_ref": "dolaio/gpt-5.4",
-                    "definition": models_config["providers"]["dolaio"]["models"][0],
+                    "definition": {
+                        "id": "gpt-5.4",
+                        "name": "GPT-5.4",
+                        "contextWindow": 1050000,
+                        "maxTokens": 128000,
+                        "input": ["text", "image"],
+                        "cost": {"input": 0.34, "output": 2.04, "cacheRead": 0.034, "cacheWrite": 0.42},
+                        "reasoning": True,
+                    },
                 },
             ],
         )
         self.assertEqual(result["primary_model"], "official/deepseek-v4-flash")
-        self.assertEqual(result["models_config"], models_config)
+        self.assertNotIn("displayName", result["models_config"]["providers"]["official"])
+        self.assertNotIn("discount", result["models_config"]["providers"]["official"]["models"][0])
 
     def test_configure_models_writes_provider_catalog_and_overrides_api_keys(self):
         runner = FakeRunner()
@@ -308,6 +329,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             "mode": "merge",
             "providers": {
                 "dolaio": {
+                    "displayName": "Dola.io",
                     "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
                     "api": "openai-completions",
                     "apiKey": "",
@@ -320,10 +342,12 @@ class CreateInstanceV2Test(unittest.TestCase):
                             "input": ["text", "image"],
                             "cost": {"input": 0.34, "output": 2.04, "cacheRead": 0.034, "cacheWrite": 0.42},
                             "reasoning": True,
+                            "discount": 0.9,
                         }
                     ],
                 },
                 "official": {
+                    "displayName": "Official",
                     "baseUrl": "https://unitag.dola.fi/aigateway/v1",
                     "api": "openai-completions",
                     "apiKey": "",
@@ -336,6 +360,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                             "input": ["text", "image"],
                             "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
                             "reasoning": True,
+                            "discount": 1,
                         }
                     ],
                 },
@@ -382,6 +407,8 @@ class CreateInstanceV2Test(unittest.TestCase):
             saved_config["models"]["providers"]["official"]["models"][0]["id"],
             "deepseek-v4-flash",
         )
+        self.assertNotIn("displayName", saved_config["models"]["providers"]["dolaio"])
+        self.assertNotIn("discount", saved_config["models"]["providers"]["dolaio"]["models"][0])
 
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(
