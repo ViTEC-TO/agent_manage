@@ -8,6 +8,7 @@ class CreateInstanceRequest:
     template_name: str
     model_key: str
     model_env: str = "test"
+    ai_shop: str | None = None
     model: str | None = None
     workspace_root: str = "~/data"
     rollback_on_fail: bool = True

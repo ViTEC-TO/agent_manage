@@ -195,7 +195,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "primary_model": "unipay-fun/deepseek-v4-flash",
             },
         )
-        self.fetch_models_patcher.start()
+        self.fetch_models_mock = self.fetch_models_patcher.start()
         self.addCleanup(self.fetch_models_patcher.stop)
 
     def _write_host_config(self, config_path: Path, payload=None):
@@ -589,6 +589,39 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["steps"][4]["step"], "config.configure_models")
             self.assertEqual(result["steps"][-1]["step"], "config.configure_tools")
             self.assertEqual(result["steps"][-2]["step"], "config.configure_gateway_auth")
+
+    def test_create_instance_appends_ai_shop_to_by_provider_catalog_url(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            template_root.mkdir(parents=True)
+            workspace_root = tmp_path / "data"
+            config_path = tmp_path / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"defaults": {}}}), encoding="utf-8")
+            self._write_archive(template_root / "base.zip", {"SOUL.md": "base\n"})
+
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+            self.fetch_models_mock.reset_mock()
+            result = manager.create_instance(
+                CreateInstanceRequest(
+                    template_name="base",
+                    model_key="test-key",
+                    ai_shop="maomaoshuo",
+                    workspace_root=str(workspace_root),
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.fetch_models_mock.assert_called_once_with(
+            "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/maomaoshuo"
+        )
+        self.assertEqual(result["ai_shop"], "maomaoshuo")
 
     def test_create_instance_installs_multi_agent_template_members_from_agents_folder(self):
         runner = FakeRunner()

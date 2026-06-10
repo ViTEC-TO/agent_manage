@@ -48,6 +48,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         choices=MODEL_ENV_CHOICES,
         default=DEFAULT_MODEL_ENV,
     )
+    create_instance.add_argument("--ai-shop")
     create_instance.add_argument("--model")
     create_instance.add_argument("--workspace-root", default="~/data")
     create_instance.add_argument("--no-rollback", action="store_true")
@@ -137,6 +138,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     template_name=args.template_name,
                     model_key=args.model_key,
                     model_env=args.model_env,
+                    ai_shop=args.ai_shop,
                     model=args.model,
                     workspace_root=args.workspace_root,
                     rollback_on_fail=not args.no_rollback,

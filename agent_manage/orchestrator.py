@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -169,7 +169,12 @@ class InstanceManagerV2:
             fetched_models = self._run_timed_step(
                 steps,
                 "models.fetch_catalog",
-                lambda: self._fetch_supported_gateway_models(model_gateway["catalog_url"]),
+                lambda: self._fetch_supported_gateway_models(
+                    self._catalog_url_for_ai_shop(
+                        model_gateway["catalog_url"],
+                        request.ai_shop,
+                    )
+                ),
             )
 
             models_result = self._run_timed_step(
@@ -204,6 +209,7 @@ class InstanceManagerV2:
                 "agent_name": agent_name,
                 "additional_agents": additional_agents,
                 "model_env": request.model_env,
+                "ai_shop": request.ai_shop,
                 "gateway_token": gateway_token,
                 "workspace": str(workspace),
                 "archive_path": str(archive_path),
@@ -2274,6 +2280,15 @@ class InstanceManagerV2:
             allowed = ", ".join(sorted(self.MODEL_GATEWAYS))
             raise ValueError(f"Unsupported model_env '{resolved_env}'. Allowed: {allowed}")
         return gateway
+
+    def _catalog_url_for_ai_shop(self, catalog_url: str, ai_shop: Optional[str]) -> str:
+        shop_path = (ai_shop or "").strip().strip("/")
+        if not shop_path:
+            return catalog_url
+        base_catalog_url = catalog_url.rstrip("/")
+        if not base_catalog_url.endswith("/byProvider"):
+            raise ValueError("--ai-shop is only supported for byProvider model catalog URLs")
+        return f"{base_catalog_url}/{quote(shop_path, safe='')}"
 
     def _catalog_url_for_model_base_url(self, base_url: str) -> str:
         for gateway in self.MODEL_GATEWAYS.values():
