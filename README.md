@@ -30,20 +30,18 @@ python3 scripts/agentctl.py
 - 直接从 `openclaw.json` 的 `agents.list` 检查同名 agent 是否已存在
 - 如果同名 agent 已存在，会跳过 `openclaw agents add`，继续后续步骤
 - 如果 workspace 已存在且非空，会跳过 `workspace.populate`，继续后续步骤
-- `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 的
-  `models.providers.unipay-fun.apiKey`
+- `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 里每个模型 provider 的 `apiKey`
 - `--model-env` 默认为 `test`；传 `cn` 时会使用
   `https://api.dolaio.cn/aigateway/v1` 作为模型调用地址，并从
   `https://api.dolaio.cn/aigateway/api/frontend/aimodels` 拉取模型目录
 - 创建时会生成新的 `gateway_token`，写入 `gateway.auth.token`，并在返回结果里带回
 - 默认 `test` 环境创建时会先从
-  `https://unitag.dola.fi/aigateway/api/frontend/aimodels`
+  `https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider`
   拉取当前激活模型目录，再写入 `~/.openclaw/openclaw.json`
-- 写入时会把返回模型转换成 `openclaw` 当前使用的 provider 模型定义结构，保存到
-  `models.providers.unipay-fun.models`
+- 如果模型目录已经返回 `content.models.providers`，会直接写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
 - `agents.defaults.models` 会按当前拉取到的模型重建
-- 默认主模型优先使用 `unipay-fun/deepseek-v4-flash`；如果当前目录里没有这个模型，则退回到拉取结果里的第一个可用模型
-- 如果模板原先带有 `vllm` 等旧 provider，会在初始化时被覆盖掉，只保留 `unipay-fun`
+- 默认主模型优先使用拉取结果里的推荐模型；如果当前目录里没有推荐模型，则退回到拉取结果里的第一个可用模型
+- 如果模板原先带有 `vllm` 等旧 provider，会在初始化时被拉取到的模型 providers 覆盖
 - 创建完成后会额外写入 `~/.openclaw/openclaw.json` 的工具默认配置：
   `tools.profile = coding`、`tools.exec.security = full`、
   `tools.web.search.enabled = false`、`tools.web.fetch.enabled = true`、
@@ -1206,10 +1204,10 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py models
 
 ### 行为说明
 
-- 重新请求当前 `models.providers.unipay-fun.baseUrl` 对应环境的模型目录
+- 重新请求当前模型 provider `baseUrl` 对应环境的模型目录
 - 将最新激活模型按当前 `openclaw` 配置格式写回 `~/.openclaw/openclaw.json`
 - 优先保留当前默认模型；如果当前默认模型已经不在最新目录里，则回退到推荐默认模型
-- 需要当前配置中已经存在 `models.providers.unipay-fun.apiKey`
+- 需要当前配置中至少一个模型 provider 已经存在 `apiKey`
 
 ### 远程执行
 

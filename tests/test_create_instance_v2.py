@@ -235,6 +235,154 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(result["upstream"]["currency"], "USD")
         self.assertEqual(result["upstream"]["token_pricing_unit"], "PerMillionTokens")
 
+    def test_provider_catalog_models_maps_openclaw_config_shape(self):
+        manager = InstanceManagerV2(FakeRunner())
+        models_config = {
+            "mode": "merge",
+            "providers": {
+                "dolaio": {
+                    "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
+                    "api": "openai-completions",
+                    "apiKey": "",
+                    "models": [
+                        {
+                            "id": "gpt-5.4",
+                            "name": "GPT-5.4",
+                            "contextWindow": 1050000,
+                            "maxTokens": 128000,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0.34, "output": 2.04, "cacheRead": 0.034, "cacheWrite": 0.42},
+                            "reasoning": True,
+                        }
+                    ],
+                },
+                "official": {
+                    "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                    "api": "openai-completions",
+                    "apiKey": "",
+                    "models": [
+                        {
+                            "id": "deepseek-v4-flash",
+                            "name": "DeepSeek V4 Flash",
+                            "contextWindow": 1000000,
+                            "maxTokens": 128000,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
+                            "reasoning": True,
+                        }
+                    ],
+                },
+            },
+        }
+
+        result = manager._normalize_provider_catalog_models(
+            models_config=models_config,
+            source_url="https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",
+        )
+
+        self.assertEqual(result["source_url"], "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider")
+        self.assertEqual(result["model_count"], 2)
+        self.assertEqual(
+            result["models"],
+            [
+                {
+                    "id": "deepseek-v4-flash",
+                    "provider": "official",
+                    "model_ref": "official/deepseek-v4-flash",
+                    "definition": models_config["providers"]["official"]["models"][0],
+                },
+                {
+                    "id": "gpt-5.4",
+                    "provider": "dolaio",
+                    "model_ref": "dolaio/gpt-5.4",
+                    "definition": models_config["providers"]["dolaio"]["models"][0],
+                },
+            ],
+        )
+        self.assertEqual(result["primary_model"], "official/deepseek-v4-flash")
+        self.assertEqual(result["models_config"], models_config)
+
+    def test_configure_models_writes_provider_catalog_and_overrides_api_keys(self):
+        runner = FakeRunner()
+        models_config = {
+            "mode": "merge",
+            "providers": {
+                "dolaio": {
+                    "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
+                    "api": "openai-completions",
+                    "apiKey": "",
+                    "models": [
+                        {
+                            "id": "gpt-5.4",
+                            "name": "GPT-5.4",
+                            "contextWindow": 1050000,
+                            "maxTokens": 128000,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0.34, "output": 2.04, "cacheRead": 0.034, "cacheWrite": 0.42},
+                            "reasoning": True,
+                        }
+                    ],
+                },
+                "official": {
+                    "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                    "api": "openai-completions",
+                    "apiKey": "",
+                    "models": [
+                        {
+                            "id": "deepseek-v4-flash",
+                            "name": "DeepSeek V4 Flash",
+                            "contextWindow": 1000000,
+                            "maxTokens": 128000,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
+                            "reasoning": True,
+                        }
+                    ],
+                },
+            },
+        }
+        catalog_result = InstanceManagerV2(FakeRunner())._normalize_provider_catalog_models(
+            models_config=models_config,
+            source_url="https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(
+                json.dumps({"agents": {"defaults": {}}}),
+                encoding="utf-8",
+            )
+
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager._configure_config_models(
+                model_key="shared-key",
+                supported_models=catalog_result["models"],
+                models_config=catalog_result["models_config"],
+            )
+
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["providers"], ["dolaio", "official"])
+        self.assertEqual(result["primary_model"], "official/deepseek-v4-flash")
+        self.assertEqual(
+            saved_config["agents"]["defaults"]["models"],
+            {
+                "official/deepseek-v4-flash": {},
+                "dolaio/gpt-5.4": {},
+            },
+        )
+        self.assertEqual(saved_config["agents"]["defaults"]["model"]["primary"], "official/deepseek-v4-flash")
+        self.assertEqual(saved_config["models"]["providers"]["dolaio"]["apiKey"], "shared-key")
+        self.assertEqual(saved_config["models"]["providers"]["official"]["apiKey"], "shared-key")
+        self.assertEqual(
+            saved_config["models"]["providers"]["dolaio"]["baseUrl"],
+            "https://unitag.dola.fi/aigateway/dolaio/v1",
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["official"]["models"][0]["id"],
+            "deepseek-v4-flash",
+        )
+
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(
             responses={

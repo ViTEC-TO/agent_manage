@@ -5,10 +5,12 @@ import secrets
 import shutil
 import tempfile
 import uuid
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -47,7 +49,7 @@ class InstanceManagerV2:
     MODEL_GATEWAYS = {
         "test": {
             "base_url": "https://unitag.dola.fi/aigateway/v1",
-            "catalog_url": "https://unitag.dola.fi/aigateway/api/frontend/aimodels",
+            "catalog_url": "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",
         },
         "cn": {
             "base_url": "https://api.dolaio.cn/aigateway/v1",
@@ -166,6 +168,7 @@ class InstanceManagerV2:
                     model_key=request.model_key,
                     supported_models=fetched_models["models"],
                     base_url=model_gateway["base_url"],
+                    models_config=fetched_models.get("models_config"),
                 ),
             )
 
@@ -962,6 +965,7 @@ class InstanceManagerV2:
         return {
             "ok": True,
             "provider": self.MANAGED_MODEL_PROVIDER,
+            "providers": self._model_provider_keys(config.get("models")),
             "current_model": current_model,
             "supported_model_refs": [item["model_ref"] for item in models],
             "models": models,
@@ -990,12 +994,14 @@ class InstanceManagerV2:
                 supported_models=fetched_models["models"],
                 primary_model=current_model,
                 base_url=base_url,
+                models_config=fetched_models.get("models_config"),
             ),
         )
 
         return {
             "ok": True,
             "provider": self.MANAGED_MODEL_PROVIDER,
+            "providers": configure_result["providers"],
             "current_model_before": current_model,
             "current_model_after": configure_result["primary_model"],
             "supported_model_refs": configure_result["managed_models"],
@@ -1513,6 +1519,7 @@ class InstanceManagerV2:
         supported_models: List[Dict[str, object]],
         primary_model: Optional[str] = None,
         base_url: Optional[str] = None,
+        models_config: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
         config_path = self.config_path
         resolved_base_url = base_url or self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"]
@@ -1528,6 +1535,7 @@ class InstanceManagerV2:
                 "base_url": resolved_base_url,
                 "primary_model": resolved_primary_model,
                 "managed_models": managed_model_refs,
+                "providers": self._model_provider_keys(models_config),
             }
 
         config = self._load_config()
@@ -1539,17 +1547,12 @@ class InstanceManagerV2:
         defaults["models"] = {model_ref: {} for model_ref in managed_model_refs}
         defaults["model"] = {"primary": resolved_primary_model}
 
-        config["models"] = {
-            "mode": "merge",
-            "providers": {
-                self.MANAGED_MODEL_PROVIDER: {
-                    "baseUrl": resolved_base_url,
-                    "api": "openai-completions",
-                    "apiKey": model_key,
-                    "models": [item["definition"] for item in supported_models],
-                }
-            },
-        }
+        config["models"] = self._models_config_with_api_key(
+            model_key=model_key,
+            models_config=models_config,
+            fallback_base_url=resolved_base_url,
+            supported_models=supported_models,
+        )
 
         self._write_config(
             config,
@@ -1563,6 +1566,7 @@ class InstanceManagerV2:
                 "primary_model": resolved_primary_model,
                 "managed_models": managed_model_refs,
                 "base_url": resolved_base_url,
+                "providers": self._model_provider_keys(config["models"]),
             },
         )
         return {
@@ -1570,7 +1574,49 @@ class InstanceManagerV2:
             "base_url": resolved_base_url,
             "primary_model": resolved_primary_model,
             "managed_models": managed_model_refs,
+            "providers": self._model_provider_keys(config["models"]),
         }
+
+    def _models_config_with_api_key(
+        self,
+        *,
+        model_key: str,
+        models_config: Optional[Dict[str, object]],
+        fallback_base_url: str,
+        supported_models: List[Dict[str, object]],
+    ) -> Dict[str, object]:
+        if models_config is None:
+            return {
+                "mode": "merge",
+                "providers": {
+                    self.MANAGED_MODEL_PROVIDER: {
+                        "baseUrl": fallback_base_url,
+                        "api": "openai-completions",
+                        "apiKey": model_key,
+                        "models": [item["definition"] for item in supported_models],
+                    }
+                },
+            }
+
+        resolved = deepcopy(models_config)
+        providers = resolved.get("providers")
+        if not isinstance(providers, dict):
+            raise ValueError("Model config missing providers")
+        for provider_key, provider in providers.items():
+            if not isinstance(provider, dict):
+                raise ValueError(f"Model provider config must be an object: {provider_key}")
+            provider["apiKey"] = model_key
+        if "mode" not in resolved:
+            resolved["mode"] = "merge"
+        return resolved
+
+    def _model_provider_keys(self, models_config: Optional[Dict[str, object]]) -> List[str]:
+        if not isinstance(models_config, dict):
+            return [self.MANAGED_MODEL_PROVIDER]
+        providers = models_config.get("providers")
+        if not isinstance(providers, dict):
+            return []
+        return [str(key) for key in providers.keys()]
 
     def _configure_config_tools(self, agent_names: Optional[List[str]] = None) -> Dict[str, object]:
         config_path = self.config_path
@@ -2080,8 +2126,16 @@ class InstanceManagerV2:
             raise RuntimeError(f"Failed to fetch model catalog: {exc}") from exc
 
         content = payload.get("content")
+        if isinstance(content, dict):
+            models_config = content.get("models")
+            if isinstance(models_config, dict) and isinstance(models_config.get("providers"), dict):
+                return self._normalize_provider_catalog_models(
+                    models_config=models_config,
+                    source_url=resolved_catalog_url,
+                )
+
         if not isinstance(content, list):
-            raise ValueError("Model catalog response missing 'content' list")
+            raise ValueError("Model catalog response missing supported 'content' shape")
 
         models = [
             self._normalize_catalog_model(item)
@@ -2099,6 +2153,51 @@ class InstanceManagerV2:
             "primary_model": self._select_primary_model_ref(models),
         }
 
+    def _normalize_provider_catalog_models(
+        self,
+        *,
+        models_config: Dict[str, object],
+        source_url: str,
+    ) -> Dict[str, object]:
+        providers = models_config.get("providers")
+        if not isinstance(providers, dict):
+            raise ValueError("Model catalog response missing providers")
+
+        models: List[Dict[str, object]] = []
+        for provider_key, provider_config in providers.items():
+            provider_name = str(provider_key).strip()
+            if not provider_name or not isinstance(provider_config, dict):
+                continue
+            definitions = provider_config.get("models")
+            if not isinstance(definitions, list):
+                continue
+            for definition in definitions:
+                if not isinstance(definition, dict):
+                    continue
+                model_id = definition.get("id")
+                if not isinstance(model_id, str) or not model_id.strip():
+                    continue
+                model_id = model_id.strip()
+                models.append(
+                    {
+                        "id": model_id,
+                        "provider": provider_name,
+                        "model_ref": f"{provider_name}/{model_id}",
+                        "definition": definition,
+                    }
+                )
+        if not models:
+            raise ValueError("Model catalog did not contain any provider models")
+
+        models.sort(key=self._supported_model_sort_key)
+        return {
+            "source_url": source_url,
+            "model_count": len(models),
+            "models": models,
+            "primary_model": self._select_primary_model_ref(models),
+            "models_config": models_config,
+        }
+
     def _model_gateway_for_env(self, model_env: Optional[str]) -> Dict[str, str]:
         resolved_env = (model_env or self.DEFAULT_MODEL_ENV).strip()
         gateway = self.MODEL_GATEWAYS.get(resolved_env)
@@ -2111,7 +2210,14 @@ class InstanceManagerV2:
         for gateway in self.MODEL_GATEWAYS.values():
             if gateway["base_url"] == base_url:
                 return gateway["catalog_url"]
+            if self._same_url_host(gateway["base_url"], base_url):
+                return gateway["catalog_url"]
         raise ValueError(f"Unsupported model baseUrl '{base_url}'")
+
+    def _same_url_host(self, left: str, right: str) -> bool:
+        left_host = urlparse(left).netloc
+        right_host = urlparse(right).netloc
+        return bool(left_host and right_host and left_host == right_host)
 
     def _normalize_catalog_model(self, item: Dict[str, object]) -> Dict[str, object]:
         model_id = str(item.get("identifier") or "").strip()
@@ -2158,10 +2264,10 @@ class InstanceManagerV2:
         supported_refs = {item["model_ref"] for item in supported_models}
         if preferred_model_ref and preferred_model_ref in supported_refs:
             return preferred_model_ref
-        by_id = {item["id"]: item["model_ref"] for item in supported_models}
         for model_id in self.PREFERRED_PRIMARY_MODEL_IDS:
-            if model_id in by_id:
-                return by_id[model_id]
+            for item in supported_models:
+                if item["id"] == model_id:
+                    return item["model_ref"]
         return supported_models[0]["model_ref"]
 
     def _supported_model_sort_key(self, item: Dict[str, object]) -> tuple[int, str]:
@@ -2173,23 +2279,32 @@ class InstanceManagerV2:
         return (index, model_id)
 
     def _supported_models_from_config(self, config: Dict[str, object]) -> List[Dict[str, object]]:
-        provider = config.get("models", {}).get("providers", {}).get(self.MANAGED_MODEL_PROVIDER, {})
-        definitions = provider.get("models", []) if isinstance(provider, dict) else []
+        providers = config.get("models", {}).get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
         models: List[Dict[str, object]] = []
-        for item in definitions:
-            if not isinstance(item, dict):
+        for provider_key, provider in providers.items():
+            provider_name = str(provider_key).strip()
+            if not provider_name or not isinstance(provider, dict):
                 continue
-            model_id = item.get("id")
-            if not isinstance(model_id, str) or not model_id.strip():
+            definitions = provider.get("models", [])
+            if not isinstance(definitions, list):
                 continue
-            model_id = model_id.strip()
-            models.append(
-                {
-                    "id": model_id,
-                    "model_ref": f"{self.MANAGED_MODEL_PROVIDER}/{model_id}",
-                    "definition": item,
-                }
-            )
+            for item in definitions:
+                if not isinstance(item, dict):
+                    continue
+                model_id = item.get("id")
+                if not isinstance(model_id, str) or not model_id.strip():
+                    continue
+                model_id = model_id.strip()
+                models.append(
+                    {
+                        "id": model_id,
+                        "provider": provider_name,
+                        "model_ref": f"{provider_name}/{model_id}",
+                        "definition": item,
+                    }
+                )
         models.sort(key=self._supported_model_sort_key)
         return models
 
@@ -2197,7 +2312,7 @@ class InstanceManagerV2:
         config = self._load_config()
         supported_refs = [item["model_ref"] for item in self._supported_models_from_config(config)]
         if not supported_refs:
-            raise ValueError(f"No supported models configured under provider '{self.MANAGED_MODEL_PROVIDER}'")
+            raise ValueError("No supported models configured")
         return supported_refs
 
     def _configured_default_model_from_config(self, config: Dict[str, object]) -> Optional[str]:
@@ -2210,17 +2325,21 @@ class InstanceManagerV2:
         return None
 
     def _configured_model_api_key_from_config(self, config: Dict[str, object]) -> str:
-        provider = config.get("models", {}).get("providers", {}).get(self.MANAGED_MODEL_PROVIDER, {})
-        api_key = provider.get("apiKey") if isinstance(provider, dict) else None
-        if not isinstance(api_key, str) or not api_key.strip():
-            raise ValueError(f"Configured apiKey not found for provider '{self.MANAGED_MODEL_PROVIDER}'")
-        return api_key.strip()
+        providers = config.get("models", {}).get("providers", {})
+        if isinstance(providers, dict):
+            for provider in providers.values():
+                api_key = provider.get("apiKey") if isinstance(provider, dict) else None
+                if isinstance(api_key, str) and api_key.strip():
+                    return api_key.strip()
+        raise ValueError("Configured model apiKey not found")
 
     def _configured_model_base_url_from_config(self, config: Dict[str, object]) -> str:
-        provider = config.get("models", {}).get("providers", {}).get(self.MANAGED_MODEL_PROVIDER, {})
-        base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
-        if isinstance(base_url, str) and base_url.strip():
-            return base_url.strip()
+        providers = config.get("models", {}).get("providers", {})
+        if isinstance(providers, dict):
+            for provider in providers.values():
+                base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
+                if isinstance(base_url, str) and base_url.strip():
+                    return base_url.strip()
         return self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"]
 
     def _restart_gateway_service(self) -> Dict[str, object]:
