@@ -33,12 +33,12 @@ python3 scripts/agentctl.py
 - `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 里每个模型 provider 的 `apiKey`
 - `--model-env` 默认为 `test`；传 `cn` 时会使用
   `https://api.dolaio.cn/aigateway/v1` 作为模型调用地址，并从
-  `https://api.dolaio.cn/aigateway/api/frontend/aimodels` 拉取模型目录
+  `https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider` 拉取模型目录
 - 创建时会生成新的 `gateway_token`，写入 `gateway.auth.token`，并在返回结果里带回
 - 默认 `test` 环境创建时会先从
   `https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider`
   拉取当前激活模型目录，再写入 `~/.openclaw/openclaw.json`
-- `test` 环境可选传 `--ai-shop {shoppath}`，模型目录会改为从
+- 使用 `/byProvider` 模型目录的环境可选传 `--ai-shop {shoppath}`，模型目录会改为从
   `https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/{shoppath}`
   拉取；不传时仍使用不带 `{shoppath}` 的 `/byProvider`
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`

@@ -53,11 +53,10 @@ class InstanceManagerV2:
         },
         "cn": {
             "base_url": "https://api.dolaio.cn/aigateway/v1",
-            "catalog_url": "https://api.dolaio.cn/aigateway/api/frontend/aimodels",
+            "catalog_url": "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider",
         },
     }
     MODEL_CATALOG_URL = MODEL_GATEWAYS[DEFAULT_MODEL_ENV]["catalog_url"]
-    DEFAULT_MODEL_MAX_TOKENS = 128000
     PREFERRED_PRIMARY_MODEL_IDS = (
         "deepseek-v4-flash",
         "deepseek-v4-pro",
@@ -2151,24 +2150,7 @@ class InstanceManagerV2:
                     source_url=resolved_catalog_url,
                 )
 
-        if not isinstance(content, list):
-            raise ValueError("Model catalog response missing supported 'content' shape")
-
-        models = [
-            self._normalize_catalog_model(item)
-            for item in content
-            if isinstance(item, dict) and item.get("isActive") is True
-        ]
-        if not models:
-            raise ValueError("Model catalog did not contain any active models")
-
-        models.sort(key=self._supported_model_sort_key)
-        return {
-            "source_url": resolved_catalog_url,
-            "model_count": len(models),
-            "models": models,
-            "primary_model": self._select_primary_model_ref(models),
-        }
+        raise ValueError("Model catalog response missing content.models.providers")
 
     def _normalize_provider_catalog_models(
         self,
@@ -2302,43 +2284,6 @@ class InstanceManagerV2:
         left_host = urlparse(left).netloc
         right_host = urlparse(right).netloc
         return bool(left_host and right_host and left_host == right_host)
-
-    def _normalize_catalog_model(self, item: Dict[str, object]) -> Dict[str, object]:
-        model_id = str(item.get("identifier") or "").strip()
-        if not model_id:
-            raise ValueError(f"Model catalog entry missing identifier: {item}")
-
-        context_window = self._to_int(item.get("contextWindowTokens"))
-        if context_window is None:
-            raise ValueError(f"Model catalog entry missing contextWindowTokens for '{model_id}'")
-
-        display_name = str(item.get("displayName") or model_id).strip()
-        return {
-            "id": model_id,
-            "model_ref": f"{self.MANAGED_MODEL_PROVIDER}/{model_id}",
-            "definition": {
-                "id": model_id,
-                "name": display_name,
-                "contextWindow": context_window,
-                "maxTokens": self.DEFAULT_MODEL_MAX_TOKENS,
-                "input": ["text", "image"],
-                "cost": {
-                    "input": self._to_number(item.get("inputTokenPrice")),
-                    "output": self._to_number(item.get("outputTokenPrice")),
-                    "cacheRead": self._to_number(item.get("cachedInputTokenPrice")),
-                    "cacheWrite": 0,
-                },
-                "reasoning": item.get("reasoningTokenPrice") is not None,
-            },
-            "upstream": {
-                "display_name": display_name,
-                "model_provider_identifier": item.get("modelProviderIdentifier"),
-                "model_provider_display_name": item.get("modelProviderDisplayName"),
-                "currency": item.get("currency"),
-                "token_pricing_unit": item.get("tokenPricingUnit"),
-                "reasoning_token_price": self._to_number(item.get("reasoningTokenPrice")),
-            },
-        }
 
     def _select_primary_model_ref(
         self,
@@ -2515,16 +2460,6 @@ class InstanceManagerV2:
             return False
         needle = f":{self.GATEWAY_PORT}"
         return any(needle in line for line in result.stdout.splitlines())
-
-    def _to_int(self, value) -> Optional[int]:
-        if value is None:
-            return None
-        return int(value)
-
-    def _to_number(self, value) -> float:
-        if value is None:
-            return 0
-        return float(value)
 
     def _normalize_feishu_account_id(self, account_id: str) -> str:
         value = account_id.strip()

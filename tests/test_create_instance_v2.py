@@ -202,39 +202,6 @@ class CreateInstanceV2Test(unittest.TestCase):
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(payload or {}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    def test_normalize_catalog_model_maps_api_fields(self):
-        manager = InstanceManagerV2(FakeRunner())
-
-        result = manager._normalize_catalog_model(
-            {
-                "identifier": "deepseek-v4-flash",
-                "displayName": "DeepSeek V4 Flash",
-                "contextWindowTokens": 1000000,
-                "inputTokenPrice": 0.14,
-                "outputTokenPrice": 0.28,
-                "cachedInputTokenPrice": 0.028,
-                "reasoningTokenPrice": None,
-                "currency": "USD",
-                "tokenPricingUnit": "PerMillionTokens",
-            }
-        )
-
-        self.assertEqual(result["model_ref"], "unipay-fun/deepseek-v4-flash")
-        self.assertEqual(
-            result["definition"],
-            {
-                "id": "deepseek-v4-flash",
-                "name": "DeepSeek V4 Flash",
-                "contextWindow": 1000000,
-                "maxTokens": InstanceManagerV2.DEFAULT_MODEL_MAX_TOKENS,
-                "input": ["text", "image"],
-                "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
-                "reasoning": False,
-            },
-        )
-        self.assertEqual(result["upstream"]["currency"], "USD")
-        self.assertEqual(result["upstream"]["token_pricing_unit"], "PerMillionTokens")
-
     def test_provider_catalog_models_maps_openclaw_config_shape(self):
         manager = InstanceManagerV2(FakeRunner())
         models_config = {
@@ -622,6 +589,18 @@ class CreateInstanceV2Test(unittest.TestCase):
             "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/maomaoshuo"
         )
         self.assertEqual(result["ai_shop"], "maomaoshuo")
+
+    def test_cn_model_env_uses_by_provider_catalog_url_with_ai_shop(self):
+        manager = InstanceManagerV2(FakeRunner())
+        catalog_url = manager._catalog_url_for_ai_shop(
+            InstanceManagerV2.MODEL_GATEWAYS["cn"]["catalog_url"],
+            "maomaoshuo",
+        )
+
+        self.assertEqual(
+            catalog_url,
+            "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider/maomaoshuo",
+        )
 
     def test_create_instance_installs_multi_agent_template_members_from_agents_folder(self):
         runner = FakeRunner()
