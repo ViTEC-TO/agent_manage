@@ -41,7 +41,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create_instance = subparsers.add_parser("create-instance")
-    create_instance.add_argument("--template-name", required=True)
+    create_instance.add_argument("--template-name")
+    create_instance.add_argument("--agent-zip")
+    create_instance.add_argument("--local", action="store_true")
     create_instance.add_argument("--model-key", required=True)
     create_instance.add_argument(
         "--model-env",
@@ -50,7 +52,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     create_instance.add_argument("--ai-shop")
     create_instance.add_argument("--model")
-    create_instance.add_argument("--workspace-root", default="~/data")
+    create_instance.add_argument("--workspace-root")
     create_instance.add_argument("--no-rollback", action="store_true")
 
     add_agents = subparsers.add_parser("add-agents")
@@ -140,8 +142,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     model_env=args.model_env,
                     ai_shop=args.ai_shop,
                     model=args.model,
-                    workspace_root=args.workspace_root,
+                    workspace_root=args.workspace_root
+                    or ("~/.openclaw/data" if args.local else "~/data"),
                     rollback_on_fail=not args.no_rollback,
+                    agent_zip=args.agent_zip,
+                    local=args.local,
                 )
             )
             print_json(build_success_response(result))

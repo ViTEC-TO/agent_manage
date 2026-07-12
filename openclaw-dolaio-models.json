@@ -1,0 +1,167 @@
+{
+  "agents": {
+    "defaults": {
+      "models": {
+        "dolaio/claude-haiku-4-5": {},
+        "dolaio/claude-opus-4-6": {},
+        "dolaio/claude-opus-4-7": {},
+        "dolaio/claude-opus-4-8": {},
+        "dolaio/claude-sonnet-4-6": {},
+        "dolaio/gpt-5.3-codex": {},
+        "dolaio/gpt-5.4": {},
+        "dolaio/gpt-5.5": {}
+      },
+      "model": {
+        "primary": "dolaio/claude-haiku-4-5"
+      }
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "dolaio": {
+        "baseUrl": "https://api.dolaio.cn/aigateway/v1",
+        "api": "openai-completions",
+        "apiKey": "YOUR_API_KEY",
+        "models": [
+          {
+            "id": "claude-haiku-4-5",
+            "name": "Claude Haiku 4.5",
+            "contextWindow": 200000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "reasoning": true
+          },
+          {
+            "id": "claude-opus-4-6",
+            "name": "Claude Opus 4.6",
+            "contextWindow": 1000000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 5.0,
+              "output": 25.0,
+              "cacheRead": 0.5,
+              "cacheWrite": 10.0
+            },
+            "reasoning": true
+          },
+          {
+            "id": "claude-opus-4-7",
+            "name": "Claude Opus 4.7",
+            "contextWindow": 1000000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 5.0,
+              "output": 25.0,
+              "cacheRead": 0.5,
+              "cacheWrite": 10.0
+            },
+            "reasoning": true
+          },
+          {
+            "id": "claude-opus-4-8",
+            "name": "Claude Opus 4.8",
+            "contextWindow": 1000000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 5.0,
+              "output": 25.0,
+              "cacheRead": 0.5,
+              "cacheWrite": 10.0
+            },
+            "reasoning": true
+          },
+          {
+            "id": "claude-sonnet-4-6",
+            "name": "Claude Sonnet 4.6",
+            "contextWindow": 1000000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 3.0,
+              "output": 15.0,
+              "cacheRead": 0.3,
+              "cacheWrite": 6.0
+            },
+            "reasoning": true
+          },
+          {
+            "id": "gpt-5.3-codex",
+            "name": "GPT-5.3 Codex",
+            "contextWindow": 400000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 1.75,
+              "output": 14.0,
+              "cacheRead": 0.175,
+              "cacheWrite": 0.3
+            },
+            "reasoning": true
+          },
+          {
+            "id": "gpt-5.4",
+            "name": "GPT-5.4",
+            "contextWindow": 1050000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 2.5,
+              "output": 15.0,
+              "cacheRead": 0.25,
+              "cacheWrite": 0.42
+            },
+            "reasoning": true
+          },
+          {
+            "id": "gpt-5.5",
+            "name": "GPT-5.5",
+            "contextWindow": 1050000,
+            "maxTokens": 128000,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 5.0,
+              "output": 30.0,
+              "cacheRead": 0.5,
+              "cacheWrite": 0.68
+            },
+            "reasoning": true
+          }
+        ]
+      }
+    }
+  }
+}

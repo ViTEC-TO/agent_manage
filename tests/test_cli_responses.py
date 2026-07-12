@@ -107,6 +107,37 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(request.ai_shop, "maomaoshuo")
         self.assertEqual(payload["result"]["agent_name"], "base")
 
+    def test_agent_manage_create_instance_accepts_local_agent_zip(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.create_instance.return_value = {
+                "ok": True,
+                "agent_name": "base",
+            }
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "create-instance",
+                        "--local",
+                        "--agent-zip",
+                        "/tmp/base.zip",
+                        "--model-key",
+                        "test-key",
+                        "--model",
+                        "unipay-fun/gpt-5.4",
+                    ]
+                )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(request.local)
+        self.assertEqual(request.agent_zip, "/tmp/base.zip")
+        self.assertEqual(request.workspace_root, "~/.openclaw/data")
+        self.assertEqual(request.model, "unipay-fun/gpt-5.4")
+        self.assertEqual(payload["result"]["agent_name"], "base")
+
     def test_agent_manage_tg_bot_status_uses_result_envelope(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
             manager_cls.return_value.get_tg_bot_status.return_value = {

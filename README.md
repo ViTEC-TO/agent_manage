@@ -13,7 +13,8 @@ python3 scripts/agentctl.py
 - 成功退出码为 `0`
 - 失败退出码为非 `0`，但 `stdout` 仍会返回结构化错误 JSON
 - 默认配置文件路径为 `~/.openclaw/openclaw.json`
-- `create-instance` 默认模板目录为 `~/template`
+- `create-instance` 默认模板目录为 `~/template`；`--local` 模式默认使用
+  `~/.openclaw/templates`
 
 ## create-instance
 
@@ -41,6 +42,9 @@ python3 scripts/agentctl.py
 - 使用 `/byProvider` 模型目录的环境可选传 `--ai-shop {shoppath}`，模型目录会改为从
   `https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/{shoppath}`
   拉取；不传时仍使用不带 `{shoppath}` 的 `/byProvider`
+- 传 `--ai-shop {shoppath}` 时，写入 OpenClaw 的每个模型 provider `baseUrl` 都会统一写成
+  `https://unitag.dola.fi/aigateway/{shoppath}/v1` 这种格式；具体来源 provider 保留在
+  `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
 - `agents.defaults.models` 会按当前拉取到的模型重建
 - 默认主模型优先使用拉取结果里的推荐模型；如果当前目录里没有推荐模型，则退回到拉取结果里的第一个可用模型
@@ -67,8 +71,33 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py create-instance \
   --model-env cn
 ```
 
+### 本机安装
+
+`--local` 用于把一个 zip agent 安装到当前用户的本机 OpenClaw：
+
+- `--agent-zip` 可直接指定 zip 文件路径；未传 `--template-name` 时会用 zip 文件名作为 agent name
+- workspace 默认创建在 `~/.openclaw/data/{agentName}`
+- 模板解压到 `~/.openclaw/templates/{agentName}`
+- 通过 `openclaw agents add` 注册 agent；OpenClaw 自己会维护 `~/.openclaw/agents`
+- 会写入模型 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
+- 如果传 `--model`，会优先把它写成 `agents.defaults.model.primary`
+- 不会生成新的 gateway token，也不会覆盖 `gateway.auth.token`
+
+示例：
+
+```bash
+python3 scripts/agentctl.py create-instance \
+  --local \
+  --agent-zip /path/to/legal-team.zip \
+  --model-key YOUR_MODEL_KEY \
+  --model-env test \
+  --model unipay-fun/gpt-5.4
+```
+
 可选参数：
 
+- `--local`
+- `--agent-zip`
 - `--model-env test|cn`
 - `--ai-shop`
 - `--model`

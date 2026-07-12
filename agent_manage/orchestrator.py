@@ -46,6 +46,8 @@ class InstanceManagerV2:
     WEIXIN_DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
     MANAGED_MODEL_PROVIDER = "unipay-fun"
     DEFAULT_MODEL_ENV = "test"
+    LOCAL_TEMPLATE_ROOT = "~/.openclaw/templates"
+    LOCAL_WORKSPACE_ROOT = "~/.openclaw/data"
     MODEL_GATEWAYS = {
         "test": {
             "base_url": "https://unitag.dola.fi/aigateway/v1",
@@ -91,6 +93,7 @@ class InstanceManagerV2:
             if template_root
             else Path("~/template").expanduser().resolve()
         )
+        self.template_root_explicit = template_root is not None
         self.config_path = (
             Path(config_path).expanduser().resolve()
             if config_path
@@ -98,6 +101,11 @@ class InstanceManagerV2:
         )
 
     def create_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
+        if request.local:
+            return self._create_local_instance(request)
+
+        if not request.template_name.strip():
+            raise ValueError("template_name is required")
         if not request.model_key.strip():
             raise ValueError("model_key is required")
         model_gateway = self._model_gateway_for_env(request.model_env)
@@ -184,6 +192,7 @@ class InstanceManagerV2:
                     supported_models=fetched_models["models"],
                     base_url=model_gateway["base_url"],
                     models_config=fetched_models.get("models_config"),
+                    ai_shop=request.ai_shop,
                 ),
             )
 
@@ -213,6 +222,163 @@ class InstanceManagerV2:
                 "workspace": str(workspace),
                 "archive_path": str(archive_path),
                 "template_dir": str(template_dir) if template_dir else None,
+                "steps": steps,
+            }
+        except Exception as exc:
+            payload = self._embedded_error_payload(exc)
+            if payload.get("rollback") and not (created_agent or created_workspace or additional_provisions):
+                raise
+            rollback_steps: List[Dict[str, object]] = []
+            if request.rollback_on_fail:
+                for item in reversed(additional_provisions):
+                    item_workspace = Path(str(item["workspace"]))
+                    if item.get("created_workspace") or (item.get("created_agent") and item_workspace.exists()):
+                        rollback_steps.append(self._safe_purge_workspace(item_workspace))
+                    if item.get("created_agent"):
+                        rollback_steps.append(self._safe_delete_agent(str(item["agent_name"])))
+                if created_workspace or (created_agent and workspace.exists()):
+                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                if created_agent:
+                    rollback_steps.append(self._safe_delete_agent(agent_name))
+                if started_template_prepare and template_dir.exists():
+                    rollback_steps.append(self._safe_purge_template_dir(template_dir))
+            raise RuntimeError(
+                json.dumps(
+                    {
+                        "error": str(exc),
+                        "details": self._error_details(exc),
+                        "steps": steps,
+                        "rollback": rollback_steps,
+                    },
+                    ensure_ascii=False,
+                )
+            ) from exc
+
+    def _create_local_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
+        if not request.model_key.strip():
+            raise ValueError("model_key is required")
+        if not request.agent_zip and not request.template_name.strip():
+            raise ValueError("template_name or agent_zip is required")
+
+        model_gateway = self._model_gateway_for_env(request.model_env)
+        steps: List[Dict[str, object]] = []
+        agent_name = self.resolve_agent_name(request)
+        workspace_root = request.workspace_root or self.LOCAL_WORKSPACE_ROOT
+        workspace = self.default_workspace(agent_name, workspace_root)
+        archive_path = self.resolve_archive_path(request)
+        template_dir = self.resolve_template_dir(request)
+        created_agent = False
+        started_template_prepare = False
+        created_workspace = False
+        additional_provisions: List[Dict[str, object]] = []
+
+        try:
+            provision_result = self._provision_agent_from_template(
+                steps=steps,
+                template_name=agent_name,
+                agent_name=agent_name,
+                archive_path=archive_path,
+                template_dir=template_dir,
+                workspace=workspace,
+                model=request.model,
+                rollback_on_fail=request.rollback_on_fail,
+                step_scope=None,
+            )
+            created_agent = bool(provision_result["created_agent"])
+            started_template_prepare = bool(provision_result["started_template_prepare"])
+            created_workspace = bool(provision_result["created_workspace"])
+
+            manifest = self._load_template_manifest(template_dir)
+            additional_specs = self._multi_agent_specs_from_template(
+                template_dir=template_dir,
+                manifest=manifest,
+                primary_agent_name=agent_name,
+                workspace_root=workspace_root,
+                fallback_model=request.model,
+            )
+            additional_agents: List[Dict[str, object]] = []
+            for spec in additional_specs:
+                spec_result = self._provision_agent_from_prepared_template(
+                    steps=steps,
+                    template_name=str(spec["template_name"]),
+                    agent_name=str(spec["agent_name"]),
+                    template_dir=Path(str(spec["template_dir"])),
+                    workspace=Path(str(spec["workspace"])),
+                    model=spec["model"] if isinstance(spec.get("model"), str) else None,
+                    rollback_on_fail=request.rollback_on_fail,
+                    step_scope=str(spec["agent_name"]),
+                )
+                additional_provisions.append(
+                    {
+                        "agent_name": spec["agent_name"],
+                        "workspace": spec["workspace"],
+                        "created_agent": spec_result["created_agent"],
+                        "created_workspace": spec_result["created_workspace"],
+                    }
+                )
+                additional_agents.append(
+                    {
+                        "agent_name": spec["agent_name"],
+                        "template_name": spec["template_name"],
+                        "source": spec["source"],
+                        "workspace": str(spec["workspace"]),
+                        "model": spec.get("model"),
+                    }
+                )
+
+            fetched_models = self._run_timed_step(
+                steps,
+                "models.fetch_catalog",
+                lambda: self._fetch_supported_gateway_models(
+                    self._catalog_url_for_ai_shop(
+                        model_gateway["catalog_url"],
+                        request.ai_shop,
+                    )
+                ),
+            )
+
+            models_result = self._run_timed_step(
+                steps,
+                "config.configure_models",
+                lambda: self._configure_config_models(
+                    model_key=request.model_key,
+                    supported_models=fetched_models["models"],
+                    primary_model=request.model,
+                    base_url=model_gateway["base_url"],
+                    models_config=fetched_models.get("models_config"),
+                    ai_shop=request.ai_shop,
+                ),
+            )
+
+            gateway_auth_result = self._run_timed_step(
+                steps,
+                "config.preserve_gateway_auth",
+                self._preserve_gateway_auth,
+            )
+
+            tools_result = self._run_timed_step(
+                steps,
+                "config.configure_tools",
+                lambda: self._configure_config_tools(
+                    [agent_name, *[str(item["agent_name"]) for item in additional_agents]]
+                ),
+            )
+
+            return {
+                "ok": True,
+                "mode": "local",
+                "template_name": agent_name,
+                "agent_name": agent_name,
+                "additional_agents": additional_agents,
+                "model_env": request.model_env,
+                "ai_shop": request.ai_shop,
+                "gateway_auth": gateway_auth_result,
+                "workspace": str(workspace),
+                "workspace_root": str(Path(workspace_root).expanduser().resolve()),
+                "archive_path": str(archive_path),
+                "template_dir": str(template_dir) if template_dir else None,
+                "config_path": str(self.config_path),
+                "restart_required": True,
                 "steps": steps,
             }
         except Exception as exc:
@@ -1057,7 +1223,12 @@ class InstanceManagerV2:
         }
 
     def resolve_agent_name(self, request: CreateInstanceRequest) -> str:
-        return request.template_name
+        template_name = (request.template_name or "").strip()
+        if template_name:
+            return template_name
+        if request.agent_zip:
+            return Path(request.agent_zip).expanduser().resolve().stem
+        raise ValueError("template_name is required")
 
     def default_workspace(self, agent_name: str, workspace_root: str) -> Path:
         return Path(workspace_root).expanduser().resolve() / agent_name
@@ -1071,10 +1242,17 @@ class InstanceManagerV2:
         return self.default_workspace(request.agent_name, workspace_root)
 
     def resolve_archive_path(self, request: CreateInstanceRequest) -> Path:
-        return self.template_root / f"{request.template_name}.zip"
+        if request.agent_zip:
+            return Path(request.agent_zip).expanduser().resolve()
+        return self._template_root_for_request(request) / f"{self.resolve_agent_name(request)}.zip"
 
     def resolve_template_dir(self, request: CreateInstanceRequest) -> Path:
-        return self.template_root / request.template_name
+        return self._template_root_for_request(request) / self.resolve_agent_name(request)
+
+    def _template_root_for_request(self, request: CreateInstanceRequest) -> Path:
+        if request.local and not self.template_root_explicit:
+            return Path(self.LOCAL_TEMPLATE_ROOT).expanduser().resolve()
+        return self.template_root
 
     def _ensure_sources_ready(self, archive_path: Path) -> None:
         if not archive_path.is_file():
@@ -1536,9 +1714,13 @@ class InstanceManagerV2:
         primary_model: Optional[str] = None,
         base_url: Optional[str] = None,
         models_config: Optional[Dict[str, object]] = None,
+        ai_shop: Optional[str] = None,
     ) -> Dict[str, object]:
         config_path = self.config_path
-        resolved_base_url = base_url or self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"]
+        resolved_base_url = self._model_base_url_for_ai_shop(
+            base_url or self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"],
+            ai_shop,
+        )
         managed_model_refs = [item["model_ref"] for item in supported_models]
         resolved_primary_model = self._select_primary_model_ref(
             supported_models,
@@ -1568,6 +1750,7 @@ class InstanceManagerV2:
             models_config=models_config,
             fallback_base_url=resolved_base_url,
             supported_models=supported_models,
+            ai_shop=ai_shop,
         )
 
         self._write_config(
@@ -1600,6 +1783,7 @@ class InstanceManagerV2:
         models_config: Optional[Dict[str, object]],
         fallback_base_url: str,
         supported_models: List[Dict[str, object]],
+        ai_shop: Optional[str] = None,
     ) -> Dict[str, object]:
         if models_config is None:
             return {
@@ -1622,6 +1806,8 @@ class InstanceManagerV2:
             if not isinstance(provider, dict):
                 raise ValueError(f"Model provider config must be an object: {provider_key}")
             provider["apiKey"] = model_key
+            if ai_shop and ai_shop.strip().strip("/"):
+                provider["baseUrl"] = fallback_base_url
         if "mode" not in resolved:
             resolved["mode"] = "merge"
         return resolved
@@ -1755,6 +1941,27 @@ class InstanceManagerV2:
             "config_path": str(config_path),
             "gateway_auth_mode": "token",
             "gateway_token": gateway_token,
+        }
+
+    def _preserve_gateway_auth(self) -> Dict[str, object]:
+        config_path = self.config_path
+        if self.runner.dry_run:
+            return {
+                "skipped": True,
+                "config_path": str(config_path),
+                "preserved": True,
+            }
+
+        config = self._load_config()
+        gateway = config.get("gateway", {})
+        auth = gateway.get("auth", {}) if isinstance(gateway, dict) else {}
+        mode = auth.get("mode") if isinstance(auth, dict) else None
+        token = auth.get("token") if isinstance(auth, dict) else None
+        return {
+            "config_path": str(config_path),
+            "preserved": True,
+            "gateway_auth_mode": mode,
+            "has_gateway_token": isinstance(token, str) and bool(token.strip()),
         }
 
     def _run_timed_step(self, steps: List[Dict[str, object]], step: str, func):
@@ -2271,6 +2478,15 @@ class InstanceManagerV2:
         if not base_catalog_url.endswith("/byProvider"):
             raise ValueError("--ai-shop is only supported for byProvider model catalog URLs")
         return f"{base_catalog_url}/{quote(shop_path, safe='')}"
+
+    def _model_base_url_for_ai_shop(self, base_url: str, ai_shop: Optional[str]) -> str:
+        shop_path = (ai_shop or "").strip().strip("/")
+        if not shop_path:
+            return base_url
+        normalized_base_url = base_url.rstrip("/")
+        if not normalized_base_url.endswith("/v1"):
+            raise ValueError("--ai-shop model baseUrl must end with /v1")
+        return f"{normalized_base_url[:-3]}/{quote(shop_path, safe='')}/v1"
 
     def _catalog_url_for_model_base_url(self, base_url: str) -> str:
         for gateway in self.MODEL_GATEWAYS.values():

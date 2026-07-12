@@ -583,12 +583,167 @@ class CreateInstanceV2Test(unittest.TestCase):
                     workspace_root=str(workspace_root),
                 )
             )
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertTrue(result["ok"])
         self.fetch_models_mock.assert_called_once_with(
             "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/maomaoshuo"
         )
         self.assertEqual(result["ai_shop"], "maomaoshuo")
+        self.assertEqual(
+            saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
+            "https://unitag.dola.fi/aigateway/maomaoshuo/v1",
+        )
+
+    def test_configure_models_overrides_provider_catalog_base_urls_with_shop_base_url(self):
+        runner = FakeRunner()
+        catalog_result = InstanceManagerV2(FakeRunner())._normalize_provider_catalog_models(
+            models_config={
+                "mode": "merge",
+                "providers": {
+                    "dolaio": {
+                        "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
+                        "api": "openai-completions",
+                        "models": [
+                            {
+                                "id": "gpt-5.4",
+                                "name": "GPT-5.4",
+                                "contextWindow": 1050000,
+                                "maxTokens": 128000,
+                                "input": ["text", "image"],
+                                "cost": {"input": 0.34, "output": 2.04, "cacheRead": 0.034, "cacheWrite": 0.42},
+                                "reasoning": True,
+                            }
+                        ],
+                    },
+                    "official": {
+                        "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                        "api": "openai-completions",
+                        "models": [
+                            {
+                                "id": "deepseek-v4-flash",
+                                "name": "DeepSeek V4 Flash",
+                                "contextWindow": 1000000,
+                                "maxTokens": 128000,
+                                "input": ["text"],
+                                "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
+                                "reasoning": True,
+                            }
+                        ],
+                    },
+                },
+            },
+            source_url="https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/aaa",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"defaults": {}}}), encoding="utf-8")
+
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager._configure_config_models(
+                model_key="shared-key",
+                supported_models=catalog_result["models"],
+                models_config=catalog_result["models_config"],
+                ai_shop="aaa",
+            )
+
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["base_url"], "https://unitag.dola.fi/aigateway/aaa/v1")
+        self.assertEqual(
+            saved_config["models"]["providers"]["dolaio"]["baseUrl"],
+            "https://unitag.dola.fi/aigateway/aaa/v1",
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["official"]["baseUrl"],
+            "https://unitag.dola.fi/aigateway/aaa/v1",
+        )
+        self.assertIn("dolaio/gpt-5.4", saved_config["agents"]["defaults"]["models"])
+
+    def test_local_create_instance_installs_agent_zip_without_resetting_gateway_auth(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / ".openclaw" / "templates"
+            workspace_root = tmp_path / ".openclaw" / "data"
+            config_path = tmp_path / ".openclaw" / "openclaw.json"
+            agent_zip = tmp_path / "incoming" / "legal-team.zip"
+            agent_zip.parent.mkdir(parents=True)
+            self._write_archive(agent_zip, {"SOUL.md": "local soul\n"})
+            self._write_host_config(
+                config_path,
+                {
+                    "agents": {"list": [], "defaults": {}},
+                    "gateway": {"auth": {"mode": "token", "token": "existing-gateway-token"}},
+                },
+            )
+
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+            result = manager.create_instance(
+                CreateInstanceRequest(
+                    agent_zip=str(agent_zip),
+                    model_key="local-model-token",
+                    model="unipay-fun/gpt-5.4",
+                    workspace_root=str(workspace_root),
+                    local=True,
+                )
+            )
+
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "local")
+        self.assertEqual(result["agent_name"], "legal-team")
+        self.assertEqual(result["workspace"], str((workspace_root / "legal-team").resolve()))
+        self.assertEqual(result["template_dir"], str((template_root / "legal-team").resolve()))
+        self.assertNotIn("gateway_token", result)
+        self.assertEqual(
+            saved_config["gateway"]["auth"],
+            {"mode": "token", "token": "existing-gateway-token"},
+        )
+        self.assertEqual(
+            saved_config["agents"]["defaults"]["model"]["primary"],
+            "unipay-fun/gpt-5.4",
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["unipay-fun"]["apiKey"],
+            "local-model-token",
+        )
+        self.assertEqual(
+            runner.calls,
+            [
+                [
+                    "openclaw",
+                    "agents",
+                    "add",
+                    "legal-team",
+                    "--workspace",
+                    str((workspace_root / "legal-team").resolve()),
+                    "--non-interactive",
+                    "--json",
+                    "--model",
+                    "unipay-fun/gpt-5.4",
+                ],
+            ],
+        )
+        self.assertEqual(
+            [item["step"] for item in result["steps"]],
+            [
+                "template.prepare",
+                "agents.add",
+                "workspace.populate",
+                "models.fetch_catalog",
+                "config.configure_models",
+                "config.preserve_gateway_auth",
+                "config.configure_tools",
+            ],
+        )
 
     def test_cn_model_env_uses_by_provider_catalog_url_with_ai_shop(self):
         manager = InstanceManagerV2(FakeRunner())
@@ -600,6 +755,13 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(
             catalog_url,
             "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider/maomaoshuo",
+        )
+        self.assertEqual(
+            manager._model_base_url_for_ai_shop(
+                InstanceManagerV2.MODEL_GATEWAYS["cn"]["base_url"],
+                "maomaoshuo",
+            ),
+            "https://api.dolaio.cn/aigateway/maomaoshuo/v1",
         )
 
     def test_create_instance_installs_multi_agent_template_members_from_agents_folder(self):
