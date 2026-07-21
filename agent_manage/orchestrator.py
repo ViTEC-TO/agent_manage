@@ -79,6 +79,7 @@ class InstanceManagerV2:
         "reasoning",
     )
     OPENCLAW_MODEL_COST_KEYS = ("input", "output", "cacheRead", "cacheWrite")
+    OPENCLAW_MODEL_INPUT_TYPES = ("text", "image", "video", "audio")
 
     def __init__(
         self,
@@ -1793,12 +1794,20 @@ class InstanceManagerV2:
                         "baseUrl": fallback_base_url,
                         "api": "openai-completions",
                         "apiKey": model_key,
-                        "models": [item["definition"] for item in supported_models],
+                        "models": [
+                            sanitized_definition
+                            for item in supported_models
+                            if isinstance(item.get("definition"), dict)
+                            for sanitized_definition in [
+                                self._sanitize_openclaw_model_definition(item["definition"])
+                            ]
+                            if sanitized_definition
+                        ],
                     }
                 },
             }
 
-        resolved = deepcopy(models_config)
+        resolved = self._sanitize_openclaw_models_config(models_config)
         providers = resolved.get("providers")
         if not isinstance(providers, dict):
             raise ValueError("Model config missing providers")
@@ -2452,6 +2461,19 @@ class InstanceManagerV2:
         }
         if "name" not in sanitized and isinstance(definition.get("displayName"), str):
             sanitized["name"] = definition["displayName"]
+
+        if "input" in sanitized:
+            model_input = sanitized["input"]
+            supported_input = (
+                [
+                    input_type
+                    for input_type in model_input
+                    if input_type in self.OPENCLAW_MODEL_INPUT_TYPES
+                ]
+                if isinstance(model_input, list)
+                else []
+            )
+            sanitized["input"] = supported_input or ["text"]
 
         cost = sanitized.get("cost")
         if isinstance(cost, dict):

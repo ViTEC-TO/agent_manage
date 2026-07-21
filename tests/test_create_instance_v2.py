@@ -1,7 +1,10 @@
+import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -236,7 +239,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                             "name": "DeepSeek V4 Flash",
                             "contextWindow": 1000000,
                             "maxTokens": 128000,
-                            "input": ["text", "image"],
+                            "input": ["text", "image", "audio", "video", "pdf"],
                             "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
                             "reasoning": True,
                             "discount": 1,
@@ -265,7 +268,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "name": "DeepSeek V4 Flash",
                         "contextWindow": 1000000,
                         "maxTokens": 128000,
-                        "input": ["text", "image"],
+                        "input": ["text", "image", "audio", "video"],
                         "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
                         "reasoning": True,
                     },
@@ -289,6 +292,157 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(result["primary_model"], "official/deepseek-v4-flash")
         self.assertNotIn("displayName", result["models_config"]["providers"]["official"])
         self.assertNotIn("discount", result["models_config"]["providers"]["official"]["models"][0])
+        self.assertEqual(
+            result["models_config"]["providers"]["official"]["models"][0]["input"],
+            ["text", "image", "audio", "video"],
+        )
+
+    def test_model_input_sanitizer_rejects_unknown_and_malformed_values(self):
+        manager = InstanceManagerV2(FakeRunner())
+
+        cases = [
+            (["pdf"], ["text"]),
+            (["pdf", "image", "document", "audio"], ["image", "audio"]),
+            ([], ["text"]),
+            ("pdf", ["text"]),
+            ({"type": "pdf"}, ["text"]),
+            (None, ["text"]),
+        ]
+        for raw_input, expected in cases:
+            with self.subTest(raw_input=raw_input):
+                result = manager._sanitize_openclaw_model_definition(
+                    {"id": "model", "name": "Model", "input": raw_input}
+                )
+                self.assertEqual(result["input"], expected)
+
+        without_input = manager._sanitize_openclaw_model_definition(
+            {"id": "model", "name": "Model"}
+        )
+        self.assertNotIn("input", without_input)
+
+    def test_configure_models_sanitizes_input_at_final_write_boundary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"defaults": {}}}), encoding="utf-8")
+            manager = InstanceManagerV2(FakeRunner(), config_path=str(config_path))
+            raw_models_config = {
+                "providers": {
+                    "google": {
+                        "baseUrl": "https://example.com/v1",
+                        "api": "openai-completions",
+                        "models": [
+                            {"id": "pdf-only", "name": "PDF only", "input": ["pdf"]},
+                            {"id": "malformed", "name": "Malformed", "input": "pdf"},
+                        ],
+                    }
+                }
+            }
+
+            manager._configure_config_models(
+                model_key="test-key",
+                supported_models=[
+                    {
+                        "id": "pdf-only",
+                        "model_ref": "google/pdf-only",
+                        "definition": raw_models_config["providers"]["google"]["models"][0],
+                    },
+                    {
+                        "id": "malformed",
+                        "model_ref": "google/malformed",
+                        "definition": raw_models_config["providers"]["google"]["models"][1],
+                    },
+                ],
+                models_config=raw_models_config,
+            )
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            [model["input"] for model in saved["models"]["providers"]["google"]["models"]],
+            [["text"], ["text"]],
+        )
+
+    def test_models_config_fallback_sanitizes_model_input(self):
+        manager = InstanceManagerV2(FakeRunner())
+
+        result = manager._models_config_with_api_key(
+            model_key="test-key",
+            models_config=None,
+            fallback_base_url="https://example.com/v1",
+            supported_models=[
+                {
+                    "definition": {
+                        "id": "pdf-only",
+                        "name": "PDF only",
+                        "input": ["pdf"],
+                    }
+                }
+            ],
+        )
+
+        self.assertEqual(
+            result["providers"][manager.MANAGED_MODEL_PROVIDER]["models"][0]["input"],
+            ["text"],
+        )
+
+    def test_generated_model_config_validates_with_installed_openclaw(self):
+        openclaw_bin = shutil.which("openclaw")
+        homebrew_openclaw = Path("/opt/homebrew/bin/openclaw")
+        if openclaw_bin is None and homebrew_openclaw.is_file():
+            openclaw_bin = str(homebrew_openclaw)
+        if openclaw_bin is None:
+            self.skipTest("openclaw is not installed")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            config_path = tmp_path / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"defaults": {}}}), encoding="utf-8")
+            manager = InstanceManagerV2(FakeRunner(), config_path=str(config_path))
+            raw_models_config = {
+                "mode": "merge",
+                "providers": {
+                    "google": {
+                        "baseUrl": "https://example.com/v1",
+                        "api": "openai-completions",
+                        "models": [
+                            {
+                                "id": "gemini-test",
+                                "name": "Gemini Test",
+                                "input": ["text", "image", "audio", "video", "pdf"],
+                            }
+                        ],
+                    }
+                },
+            }
+            manager._configure_config_models(
+                model_key="test-key",
+                supported_models=[
+                    {
+                        "id": "gemini-test",
+                        "model_ref": "google/gemini-test",
+                        "definition": raw_models_config["providers"]["google"]["models"][0],
+                    }
+                ],
+                models_config=raw_models_config,
+            )
+
+            env = os.environ.copy()
+            env["OPENCLAW_CONFIG_PATH"] = str(config_path)
+            completed = subprocess.run(
+                [openclaw_bin, "config", "validate"],
+                cwd=tmpdir,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+        )
 
     def test_configure_models_writes_provider_catalog_and_overrides_api_keys(self):
         runner = FakeRunner()

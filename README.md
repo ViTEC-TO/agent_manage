@@ -46,6 +46,7 @@ python3 scripts/agentctl.py
   `https://unitag.dola.fi/aigateway/{shoppath}/v1` 这种格式；具体来源 provider 保留在
   `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
+- 模型 `input` 只会写入 `text`、`image`、`video`、`audio`；未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
 - `agents.defaults.models` 会按当前拉取到的模型重建
 - 默认主模型优先使用拉取结果里的推荐模型；如果当前目录里没有推荐模型，则退回到拉取结果里的第一个可用模型
 - 如果模板原先带有 `vllm` 等旧 provider，会在初始化时被拉取到的模型 providers 覆盖
