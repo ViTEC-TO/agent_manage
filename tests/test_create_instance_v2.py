@@ -297,6 +297,42 @@ class CreateInstanceV2Test(unittest.TestCase):
             ["text", "image", "audio", "video"],
         )
 
+    def test_provider_catalog_removes_image_video_and_audio_models(self):
+        manager = InstanceManagerV2(FakeRunner())
+        result = manager._normalize_provider_catalog_models(
+            models_config={
+                "mode": "merge",
+                "providers": {
+                    "dolaio": {
+                        "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                        "api": "openai-completions",
+                        "models": [
+                            {"id": "gpt-5.6-sol", "modelCategory": "chat", "input": ["text", "image"]},
+                            {"id": "gpt-realtime", "modelCategory": "chat-audio", "input": ["audio"]},
+                            {"id": "seedance", "modelCategory": "video", "input": ["text", "video"]},
+                        ],
+                    },
+                    "atomx": {
+                        "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                        "api": "openai-completions",
+                        "models": [
+                            {
+                                "id": "atomx/gpt-image-2",
+                                "name": "GPT Image 2",
+                                "modelCategory": "image",
+                                "input": ["text", "image"],
+                            }
+                        ],
+                    },
+                },
+            },
+            source_url=InstanceManagerV2.MODEL_CATALOG_URL,
+        )
+
+        self.assertEqual(result["model_count"], 1)
+        self.assertEqual(result["models"][0]["model_ref"], "dolaio/gpt-5.6-sol")
+        self.assertEqual(list(result["models_config"]["providers"]), ["dolaio"])
+
     def test_model_input_sanitizer_rejects_unknown_and_malformed_values(self):
         manager = InstanceManagerV2(FakeRunner())
 
@@ -508,7 +544,7 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result["providers"], ["dolaio", "official"])
+        self.assertEqual(result["providers"], ["dolaio", "official", "openai"])
         self.assertEqual(result["primary_model"], "official/deepseek-v4-flash")
         self.assertEqual(
             saved_config["agents"]["defaults"]["models"],
@@ -530,6 +566,62 @@ class CreateInstanceV2Test(unittest.TestCase):
         )
         self.assertNotIn("displayName", saved_config["models"]["providers"]["dolaio"])
         self.assertNotIn("discount", saved_config["models"]["providers"]["dolaio"]["models"][0])
+
+    def test_configure_models_installs_openai_image_model_outside_chat_model_list(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"defaults": {}}}), encoding="utf-8")
+            manager = InstanceManagerV2(runner, config_path=str(config_path))
+            result = manager._configure_config_models(
+                model_key="shared-key",
+                supported_models=self.sample_supported_models,
+                base_url=InstanceManagerV2.MODEL_GATEWAYS["test"]["base_url"],
+                ai_shop="demo-shop",
+            )
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+
+            listed = manager.get_supported_models()
+
+        self.assertEqual(result["image_model"], "openai/gpt-image-2")
+        self.assertEqual(
+            saved_config["agents"]["defaults"]["mediaModels"]["image"],
+            {"primary": "openai/gpt-image-2", "timeoutMs": 180000},
+        )
+        self.assertNotIn(
+            "openai/gpt-image-2",
+            saved_config["agents"]["defaults"]["models"],
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["openai"]["baseUrl"],
+            "https://unitag.dola.fi/aigateway/demo-shop/v1",
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["openai"]["models"][0]["id"],
+            "gpt-image-2",
+        )
+        self.assertNotIn("openai/gpt-image-2", listed["supported_model_refs"])
+
+    def test_image_generation_policy_defaults_to_low_and_preserves_existing_agents_file(self):
+        runner = FakeRunner()
+        manager = InstanceManagerV2(runner)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            agents_path = workspace / "AGENTS.md"
+            agents_path.write_text("# Existing instructions\n", encoding="utf-8")
+
+            first = manager._configure_image_generation_policy([workspace], quality="low")
+            manager._configure_image_generation_policy([workspace], quality="medium")
+            written = agents_path.read_text(encoding="utf-8")
+
+        self.assertEqual(first["quality"], "low")
+        self.assertIn("# Existing instructions", written)
+        self.assertIn('quality: "medium"', written)
+        self.assertNotIn('quality: "low"', written)
+        self.assertEqual(written.count(manager.IMAGE_GENERATION_POLICY_START), 1)
 
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(
@@ -708,8 +800,9 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
             self.assertEqual(result["steps"][3]["step"], "models.fetch_catalog")
             self.assertEqual(result["steps"][4]["step"], "config.configure_models")
-            self.assertEqual(result["steps"][-1]["step"], "config.configure_tools")
-            self.assertEqual(result["steps"][-2]["step"], "config.configure_gateway_auth")
+            self.assertEqual(result["steps"][-1]["step"], "workspace.configure_image_generation")
+            self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
+            self.assertEqual(result["steps"][-3]["step"], "config.configure_gateway_auth")
 
     def test_create_instance_appends_ai_shop_to_by_provider_catalog_url(self):
         runner = FakeRunner()
@@ -896,6 +989,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "config.configure_models",
                 "config.preserve_gateway_auth",
                 "config.configure_tools",
+                "workspace.configure_image_generation",
             ],
         )
 
@@ -1225,7 +1319,8 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "zip weather\n",
             )
             self.assertIn("template.prepare", result["steps"][0]["step"])
-            self.assertEqual(result["steps"][-1]["step"], "config.configure_tools")
+            self.assertEqual(result["steps"][-1]["step"], "workspace.configure_image_generation")
+            self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
 
     def test_create_instance_skips_add_when_agent_exists(self):
         runner = FakeRunner()
@@ -1539,7 +1634,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertFalse((tmp_path / "data" / "base").exists())
             self.assertFalse((tmp_path / "template" / "base").exists())
             self.assertEqual(runner.calls[0][:4], ["openclaw", "agents", "add", "base"])
-            self.assertEqual(result["steps"][-2]["step"], "config.configure_gateway_auth")
+            self.assertEqual(result["steps"][-3]["step"], "config.configure_gateway_auth")
 
     def test_add_tg_bot_generates_name_and_writes_public_binding(self):
         runner = FakeRunner(

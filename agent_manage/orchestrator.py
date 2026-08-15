@@ -45,6 +45,11 @@ class InstanceManagerV2:
     WEIXIN_PLUGIN_PACKAGE = "@tencent-weixin/openclaw-weixin"
     WEIXIN_DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
     MANAGED_MODEL_PROVIDER = "unipay-fun"
+    IMAGE_MODEL_PROVIDER = "openai"
+    IMAGE_MODEL_ID = "gpt-image-2"
+    IMAGE_MODEL_REF = "openai/gpt-image-2"
+    IMAGE_GENERATION_POLICY_START = "<!-- agent_manage:image-generation-policy:start -->"
+    IMAGE_GENERATION_POLICY_END = "<!-- agent_manage:image-generation-policy:end -->"
     DEFAULT_MODEL_ENV = "test"
     LOCAL_TEMPLATE_ROOT = "~/.openclaw/templates"
     LOCAL_WORKSPACE_ROOT = "~/.openclaw/data"
@@ -212,6 +217,15 @@ class InstanceManagerV2:
                 ),
             )
 
+            self._run_timed_step(
+                steps,
+                "workspace.configure_image_generation",
+                lambda: self._configure_image_generation_policy(
+                    [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
+                    quality=request.image_quality,
+                ),
+            )
+
             return {
                 "ok": True,
                 "template_name": request.template_name,
@@ -219,6 +233,8 @@ class InstanceManagerV2:
                 "additional_agents": additional_agents,
                 "model_env": request.model_env,
                 "ai_shop": request.ai_shop,
+                "image_model": self.IMAGE_MODEL_REF,
+                "image_quality": request.image_quality,
                 "gateway_token": gateway_token,
                 "workspace": str(workspace),
                 "archive_path": str(archive_path),
@@ -365,6 +381,15 @@ class InstanceManagerV2:
                 ),
             )
 
+            self._run_timed_step(
+                steps,
+                "workspace.configure_image_generation",
+                lambda: self._configure_image_generation_policy(
+                    [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
+                    quality=request.image_quality,
+                ),
+            )
+
             return {
                 "ok": True,
                 "mode": "local",
@@ -373,6 +398,8 @@ class InstanceManagerV2:
                 "additional_agents": additional_agents,
                 "model_env": request.model_env,
                 "ai_shop": request.ai_shop,
+                "image_model": self.IMAGE_MODEL_REF,
+                "image_quality": request.image_quality,
                 "gateway_auth": gateway_auth_result,
                 "workspace": str(workspace),
                 "workspace_root": str(Path(workspace_root).expanduser().resolve()),
@@ -1735,6 +1762,7 @@ class InstanceManagerV2:
                 "primary_model": resolved_primary_model,
                 "managed_models": managed_model_refs,
                 "providers": self._model_provider_keys(models_config),
+                "image_model": self.IMAGE_MODEL_REF,
             }
 
         config = self._load_config()
@@ -1745,6 +1773,11 @@ class InstanceManagerV2:
         defaults = agents.setdefault("defaults", {})
         defaults["models"] = {model_ref: {} for model_ref in managed_model_refs}
         defaults["model"] = {"primary": resolved_primary_model}
+        media_models = defaults.setdefault("mediaModels", {})
+        media_models["image"] = {
+            "primary": self.IMAGE_MODEL_REF,
+            "timeoutMs": 180000,
+        }
 
         config["models"] = self._models_config_with_api_key(
             model_key=model_key,
@@ -1760,6 +1793,7 @@ class InstanceManagerV2:
             changed_paths=[
                 "agents.defaults.models",
                 "agents.defaults.model",
+                "agents.defaults.mediaModels.image",
                 "models",
             ],
             extra={
@@ -1767,6 +1801,7 @@ class InstanceManagerV2:
                 "managed_models": managed_model_refs,
                 "base_url": resolved_base_url,
                 "providers": self._model_provider_keys(config["models"]),
+                "image_model": self.IMAGE_MODEL_REF,
             },
         )
         return {
@@ -1775,6 +1810,7 @@ class InstanceManagerV2:
             "primary_model": resolved_primary_model,
             "managed_models": managed_model_refs,
             "providers": self._model_provider_keys(config["models"]),
+            "image_model": self.IMAGE_MODEL_REF,
         }
 
     def _models_config_with_api_key(
@@ -1787,7 +1823,7 @@ class InstanceManagerV2:
         ai_shop: Optional[str] = None,
     ) -> Dict[str, object]:
         if models_config is None:
-            return {
+            resolved = {
                 "mode": "merge",
                 "providers": {
                     self.MANAGED_MODEL_PROVIDER: {
@@ -1806,8 +1842,8 @@ class InstanceManagerV2:
                     }
                 },
             }
-
-        resolved = self._sanitize_openclaw_models_config(models_config)
+        else:
+            resolved = self._sanitize_openclaw_models_config(models_config)
         providers = resolved.get("providers")
         if not isinstance(providers, dict):
             raise ValueError("Model config missing providers")
@@ -1817,6 +1853,34 @@ class InstanceManagerV2:
             provider["apiKey"] = model_key
             if ai_shop and ai_shop.strip().strip("/"):
                 provider["baseUrl"] = fallback_base_url
+
+        image_provider = providers.setdefault(
+            self.IMAGE_MODEL_PROVIDER,
+            {
+                "baseUrl": fallback_base_url,
+                "api": "openai-completions",
+                "models": [],
+            },
+        )
+        if not isinstance(image_provider, dict):
+            raise ValueError("OpenAI image provider config must be an object")
+        image_provider["baseUrl"] = fallback_base_url
+        image_provider["apiKey"] = model_key
+        image_provider.setdefault("api", "openai-completions")
+        definitions = image_provider.setdefault("models", [])
+        if not isinstance(definitions, list):
+            raise ValueError("OpenAI image provider models must be a list")
+        if not any(
+            isinstance(item, dict) and item.get("id") == self.IMAGE_MODEL_ID
+            for item in definitions
+        ):
+            definitions.append(
+                {
+                    "id": self.IMAGE_MODEL_ID,
+                    "name": "GPT Image 2",
+                    "input": ["text", "image"],
+                }
+            )
         if "mode" not in resolved:
             resolved["mode"] = "merge"
         return resolved
@@ -1895,6 +1959,54 @@ class InstanceManagerV2:
             "agent_to_agent_enabled": True,
             "agent_to_agent_allow": agent_to_agent["allow"],
             "sessions_visibility": "all",
+        }
+
+    def _configure_image_generation_policy(
+        self,
+        workspaces: List[Path],
+        *,
+        quality: str,
+    ) -> Dict[str, object]:
+        resolved_quality = quality.strip().lower()
+        allowed_qualities = {"low", "medium", "high", "auto"}
+        if resolved_quality not in allowed_qualities:
+            allowed = ", ".join(sorted(allowed_qualities))
+            raise ValueError(f"Unsupported image quality '{quality}'. Allowed: {allowed}")
+
+        policy_block = "\n".join(
+            [
+                self.IMAGE_GENERATION_POLICY_START,
+                "## Image generation defaults",
+                "",
+                "When calling the `image_generate` tool, always pass "
+                f"`quality: \"{resolved_quality}\"` unless the user explicitly requests another quality.",
+                self.IMAGE_GENERATION_POLICY_END,
+            ]
+        )
+        configured: List[str] = []
+        for workspace in workspaces:
+            policy_path = workspace / "AGENTS.md"
+            if self.runner.dry_run:
+                configured.append(str(policy_path))
+                continue
+            if not workspace.is_dir():
+                raise FileNotFoundError(f"Workspace not found: {workspace}")
+            existing = policy_path.read_text(encoding="utf-8") if policy_path.is_file() else ""
+            start = existing.find(self.IMAGE_GENERATION_POLICY_START)
+            end = existing.find(self.IMAGE_GENERATION_POLICY_END)
+            if (start == -1) != (end == -1):
+                raise ValueError(f"Incomplete managed image policy block: {policy_path}")
+            if start != -1:
+                end += len(self.IMAGE_GENERATION_POLICY_END)
+                updated = existing[:start] + policy_block + existing[end:]
+            else:
+                prefix = existing.rstrip()
+                updated = f"{prefix}\n\n{policy_block}\n" if prefix else f"{policy_block}\n"
+            policy_path.write_text(updated, encoding="utf-8")
+            configured.append(str(policy_path))
+        return {
+            "quality": resolved_quality,
+            "policy_files": configured,
         }
 
     def _normalize_agent_to_agent_allow(self, agent_names: List[str]) -> List[str]:
@@ -2374,11 +2486,32 @@ class InstanceManagerV2:
         models_config: Dict[str, object],
         source_url: str,
     ) -> Dict[str, object]:
-        openclaw_models_config = self._sanitize_openclaw_models_config(models_config)
+        chat_models_config = self._filter_catalog_models_config(
+            models_config,
+            allowed_categories={"chat"},
+        )
+        openclaw_models_config = self._sanitize_openclaw_models_config(chat_models_config)
         providers = openclaw_models_config.get("providers")
         if not isinstance(providers, dict):
             raise ValueError("Model catalog response missing providers")
 
+        models = self._normalized_catalog_model_entries(providers)
+        if not models:
+            raise ValueError("Model catalog did not contain any chat models")
+
+        models.sort(key=self._supported_model_sort_key)
+        return {
+            "source_url": source_url,
+            "model_count": len(models),
+            "models": models,
+            "primary_model": self._select_primary_model_ref(models),
+            "models_config": openclaw_models_config,
+        }
+
+    def _normalized_catalog_model_entries(
+        self,
+        providers: Dict[str, object],
+    ) -> List[Dict[str, object]]:
         models: List[Dict[str, object]] = []
         for provider_key, provider_config in providers.items():
             provider_name = str(provider_key).strip()
@@ -2402,17 +2535,45 @@ class InstanceManagerV2:
                         "definition": definition,
                     }
                 )
-        if not models:
-            raise ValueError("Model catalog did not contain any provider models")
+        return models
 
-        models.sort(key=self._supported_model_sort_key)
-        return {
-            "source_url": source_url,
-            "model_count": len(models),
-            "models": models,
-            "primary_model": self._select_primary_model_ref(models),
-            "models_config": openclaw_models_config,
-        }
+    def _filter_catalog_models_config(
+        self,
+        models_config: Dict[str, object],
+        *,
+        allowed_categories: set[str],
+    ) -> Dict[str, object]:
+        filtered = deepcopy(models_config)
+        providers = filtered.get("providers")
+        if not isinstance(providers, dict):
+            raise ValueError("Model catalog response missing providers")
+
+        filtered_providers: Dict[str, object] = {}
+        for provider_key, provider_config in providers.items():
+            if not isinstance(provider_config, dict):
+                continue
+            definitions = provider_config.get("models")
+            if not isinstance(definitions, list):
+                continue
+            kept_definitions = [
+                definition
+                for definition in definitions
+                if isinstance(definition, dict)
+                and self._catalog_model_category(definition) in allowed_categories
+            ]
+            if not kept_definitions:
+                continue
+            filtered_provider = deepcopy(provider_config)
+            filtered_provider["models"] = kept_definitions
+            filtered_providers[str(provider_key)] = filtered_provider
+        filtered["providers"] = filtered_providers
+        return filtered
+
+    def _catalog_model_category(self, definition: Dict[str, object]) -> str:
+        category = definition.get("modelCategory")
+        if category is None:
+            return "chat"
+        return str(category).strip().lower()
 
     def _sanitize_openclaw_models_config(self, models_config: Dict[str, object]) -> Dict[str, object]:
         providers = models_config.get("providers")
@@ -2549,6 +2710,7 @@ class InstanceManagerV2:
         providers = config.get("models", {}).get("providers", {})
         if not isinstance(providers, dict):
             providers = {}
+        excluded_media_refs = self._configured_media_model_refs(config)
         models: List[Dict[str, object]] = []
         for provider_key, provider in providers.items():
             provider_name = str(provider_key).strip()
@@ -2564,16 +2726,43 @@ class InstanceManagerV2:
                 if not isinstance(model_id, str) or not model_id.strip():
                     continue
                 model_id = model_id.strip()
+                model_ref = f"{provider_name}/{model_id}"
+                if model_ref in excluded_media_refs:
+                    continue
                 models.append(
                     {
                         "id": model_id,
                         "provider": provider_name,
-                        "model_ref": f"{provider_name}/{model_id}",
+                        "model_ref": model_ref,
                         "definition": item,
                     }
                 )
         models.sort(key=self._supported_model_sort_key)
         return models
+
+    def _configured_media_model_refs(self, config: Dict[str, object]) -> set[str]:
+        defaults = config.get("agents", {}).get("defaults", {})
+        media_models = defaults.get("mediaModels", {}) if isinstance(defaults, dict) else {}
+        if not isinstance(media_models, dict):
+            return set()
+        refs: set[str] = set()
+        for model_config in media_models.values():
+            if isinstance(model_config, str) and model_config.strip():
+                refs.add(model_config.strip())
+                continue
+            if not isinstance(model_config, dict):
+                continue
+            primary = model_config.get("primary")
+            if isinstance(primary, str) and primary.strip():
+                refs.add(primary.strip())
+            fallbacks = model_config.get("fallbacks")
+            if isinstance(fallbacks, list):
+                refs.update(
+                    item.strip()
+                    for item in fallbacks
+                    if isinstance(item, str) and item.strip()
+                )
+        return refs
 
     def _supported_model_refs_from_config(self) -> List[str]:
         config = self._load_config()

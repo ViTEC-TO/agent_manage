@@ -107,6 +107,31 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(request.ai_shop, "maomaoshuo")
         self.assertEqual(payload["result"]["agent_name"], "base")
 
+    def test_agent_manage_create_instance_accepts_image_quality_default(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.create_instance.return_value = {
+                "ok": True,
+                "agent_name": "base",
+            }
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "create-instance",
+                        "--template-name",
+                        "base",
+                        "--model-key",
+                        "test-key",
+                        "--image-quality",
+                        "low",
+                    ]
+                )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request.image_quality, "low")
+
     def test_agent_manage_create_instance_accepts_local_agent_zip(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
             manager_cls.return_value.create_instance.return_value = {

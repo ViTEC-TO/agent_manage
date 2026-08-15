@@ -46,6 +46,9 @@ python3 scripts/agentctl.py
   `https://unitag.dola.fi/aigateway/{shoppath}/v1` 这种格式；具体来源 provider 保留在
   `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
+- 普通模型目录只保留 `modelCategory = chat`；`image` 会进入独立的图片模型池，`video`、`chat-audio` 和其他非聊天分类不会进入普通模型列表
+- 图片生成模型固定为 `openai/gpt-image-2`，写入 `agents.defaults.mediaModels.image.primary`；不会从目录选择或回退到其他图片模型
+- OpenClaw 暂无配置级图片生成质量字段，因此初始化会向各 agent workspace 的 `AGENTS.md` 写入受管规则；默认调用 `image_generate` 时使用 `quality: "low"`，可通过 `--image-quality low|medium|high|auto` 调整
 - 模型 `input` 只会写入 `text`、`image`、`video`、`audio`；未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
 - `agents.defaults.models` 会按当前拉取到的模型重建
 - 默认主模型优先使用拉取结果里的推荐模型；如果当前目录里没有推荐模型，则退回到拉取结果里的第一个可用模型
@@ -69,7 +72,8 @@ python3 scripts/agentctl.py
 cd ~/data/agent_manage && python3 scripts/agentctl.py create-instance \
   --template-name unipay-claw-base \
   --model-key YOUR_MODEL_KEY \
-  --model-env cn
+  --model-env cn \
+  --image-quality low
 ```
 
 ### 本机安装
@@ -102,6 +106,7 @@ python3 scripts/agentctl.py create-instance \
 - `--model-env test|cn`
 - `--ai-shop`
 - `--model`
+- `--image-quality low|medium|high|auto`（默认 `low`）
 - `--workspace-root`
 - `--no-rollback`
 - `--template-root`

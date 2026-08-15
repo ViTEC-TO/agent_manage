@@ -10,6 +10,7 @@ class CreateInstanceRequest:
     model_env: str = "test"
     ai_shop: str | None = None
     model: str | None = None
+    image_quality: str = "low"
     workspace_root: str = "~/data"
     rollback_on_fail: bool = True
     agent_zip: str | None = None
