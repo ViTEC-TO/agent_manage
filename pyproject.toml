@@ -4,9 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openclaw-remote"
-version = "0.2.1"
+dynamic = ["version"]
 description = "Local agent management script for OpenClaw servers."
 requires-python = ">=3.9"
+
+[tool.setuptools.dynamic]
+version = {attr = "agent_manage.__version__"}
 
 [project.scripts]
 agent-manage = "agent_manage.cli:main"

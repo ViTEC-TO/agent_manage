@@ -5,6 +5,7 @@ import json
 import sys
 from typing import List, Optional
 
+from . import __version__
 from .local import LocalRunner
 from .response import (
     JsonArgumentParser,
@@ -38,6 +39,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--template-root")
     parser.add_argument("--config-path")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create_instance = subparsers.add_parser("create-instance")

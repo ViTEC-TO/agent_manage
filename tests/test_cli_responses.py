@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from agent_manage.cli import main as agent_manage_main
+from agent_manage import __version__
 from agent_manage.models import AddAgentsRequest
 from agent_manage.response import (
     TYPE_CODE_INVALID_ARGUMENT,
@@ -14,6 +15,14 @@ from agent_manage.response import (
 
 
 class CliResponseTest(unittest.TestCase):
+    def test_agent_manage_version_uses_package_version(self):
+        stdout = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(stdout):
+            agent_manage_main(["--version"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(stdout.getvalue().strip(), f"agent-manage {__version__}")
+
     def test_agent_manage_success_response_uses_result_envelope(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
             manager_cls.return_value.create_instance.return_value = {

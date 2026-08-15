@@ -6,6 +6,15 @@
 python3 scripts/agentctl.py
 ```
 
+当前版本号统一维护在 `agent_manage/__init__.py` 的 `__version__`，构建配置会从该字段读取：
+
+```bash
+python3 scripts/agentctl.py --version
+# agent-manage 0.3.0
+```
+
+发布新版本时同步完成三件事：更新 `__version__`、在 `CHANGELOG.md` 增加对应版本和日期、创建同名 Git tag。
+
 通用说明：
 
 - `stdout` 只输出标准 JSON，供 `.NET`、HTTP API 或其他上层程序解析

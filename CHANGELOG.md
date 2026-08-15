@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-08-16
 
 - 创建和更新模型目录时，普通模型列表只保留 `chat` 分类，排除图片、视频和音频模型。
 - 创建实例时固定配置 `openai/gpt-image-2`，支持 `--image-quality`，并通过 workspace 受管规则把图片生成质量默认设为 `low`。
+- 新增统一版本来源和 `agent-manage --version` / `scripts/agentctl.py --version` 查询入口。
 
 ## 0.2.1 - 2026-05-06
 
