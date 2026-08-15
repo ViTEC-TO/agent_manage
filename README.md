@@ -10,7 +10,7 @@ python3 scripts/agentctl.py
 
 ```bash
 python3 scripts/agentctl.py --version
-# agent-manage 0.3.0
+# agent-manage 0.3.1
 ```
 
 发布新版本时同步完成三件事：更新 `__version__`、在 `CHANGELOG.md` 增加对应版本和日期、创建同名 Git tag。
@@ -56,7 +56,9 @@ python3 scripts/agentctl.py --version
   `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
 - 普通模型目录只保留 `modelCategory = chat`；`image` 会进入独立的图片模型池，`video`、`chat-audio` 和其他非聊天分类不会进入普通模型列表
-- 图片生成模型固定为 `openai/gpt-image-2`，写入 `agents.defaults.mediaModels.image.primary`；不会从目录选择或回退到其他图片模型
+- 图片生成模型固定为 `openai/gpt-image-2`，按 npm stable OpenClaw `2026.7.1-2` 的 schema 写入 `agents.defaults.imageGenerationModel.primary`；不会从目录选择或回退到其他图片模型
+- 如果当前商店目录的官方 provider `openai` 下包含 `gpt-image-2`，图片 provider 使用当前商店的 `baseUrl`；不要求目录额外提供 `modelCategory`
+- 如果当前商店没有官方 `openai/gpt-image-2`，图片使用的 `openai` provider 特例回退到同环境的 `/aigateway/v1`，不添加 `test` 路径；其他 provider 仍使用当前商店 `baseUrl`
 - OpenClaw 暂无配置级图片生成质量字段，因此初始化会向各 agent workspace 的 `AGENTS.md` 写入受管规则；默认调用 `image_generate` 时使用 `quality: "low"`，可通过 `--image-quality low|medium|high|auto` 调整
 - 模型 `input` 只会写入 `text`、`image`、`video`、`audio`；未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
 - `agents.defaults.models` 会按当前拉取到的模型重建
@@ -1253,6 +1255,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py models
 ### 行为说明
 
 - 重新请求当前模型 provider `baseUrl` 对应环境的模型目录
+- 如果 `baseUrl` 包含 `/aigateway/{shop}/v1`，会保留该商店路径；存在普通模型 provider 时，图片模型回退使用的无商店 `openai` 地址不会覆盖商店判断
 - 将最新激活模型按当前 `openclaw` 配置格式写回 `~/.openclaw/openclaw.json`
 - 优先保留当前默认模型；如果当前默认模型已经不在最新目录里，则回退到推荐默认模型
 - 需要当前配置中至少一个模型 provider 已经存在 `apiKey`

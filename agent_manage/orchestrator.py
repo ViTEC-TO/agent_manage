@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Dict, List, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -199,6 +199,7 @@ class InstanceManagerV2:
                     base_url=model_gateway["base_url"],
                     models_config=fetched_models.get("models_config"),
                     ai_shop=request.ai_shop,
+                    official_image_model_available=bool(fetched_models.get("official_image_model_available")),
                 ),
             )
 
@@ -364,6 +365,7 @@ class InstanceManagerV2:
                     base_url=model_gateway["base_url"],
                     models_config=fetched_models.get("models_config"),
                     ai_shop=request.ai_shop,
+                    official_image_model_available=bool(fetched_models.get("official_image_model_available")),
                 ),
             )
 
@@ -1187,8 +1189,10 @@ class InstanceManagerV2:
         config = self._load_config()
         current_model = self._configured_default_model_from_config(config)
         model_key = self._configured_model_api_key_from_config(config)
-        base_url = self._configured_model_base_url_from_config(config)
-        catalog_url = self._catalog_url_for_model_base_url(base_url)
+        configured_base_url = self._configured_model_base_url_from_config(config, current_model)
+        gateway = self._model_gateway_for_base_url(configured_base_url)
+        ai_shop = self._ai_shop_for_model_base_url(configured_base_url)
+        catalog_url = self._catalog_url_for_ai_shop(gateway["catalog_url"], ai_shop)
         steps: List[Dict[str, object]] = []
 
         fetched_models = self._run_timed_step(
@@ -1203,8 +1207,10 @@ class InstanceManagerV2:
                 model_key=model_key,
                 supported_models=fetched_models["models"],
                 primary_model=current_model,
-                base_url=base_url,
+                base_url=gateway["base_url"],
                 models_config=fetched_models.get("models_config"),
+                ai_shop=ai_shop,
+                official_image_model_available=bool(fetched_models.get("official_image_model_available")),
             ),
         )
 
@@ -1743,11 +1749,16 @@ class InstanceManagerV2:
         base_url: Optional[str] = None,
         models_config: Optional[Dict[str, object]] = None,
         ai_shop: Optional[str] = None,
+        official_image_model_available: bool = False,
     ) -> Dict[str, object]:
         config_path = self.config_path
         resolved_base_url = self._model_base_url_for_ai_shop(
             base_url or self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"],
             ai_shop,
+        )
+        image_base_url = self._image_model_base_url(
+            selected_base_url=resolved_base_url,
+            official_image_model_available=official_image_model_available,
         )
         managed_model_refs = [item["model_ref"] for item in supported_models]
         resolved_primary_model = self._select_primary_model_ref(
@@ -1773,11 +1784,14 @@ class InstanceManagerV2:
         defaults = agents.setdefault("defaults", {})
         defaults["models"] = {model_ref: {} for model_ref in managed_model_refs}
         defaults["model"] = {"primary": resolved_primary_model}
-        media_models = defaults.setdefault("mediaModels", {})
-        media_models["image"] = {
+        defaults["imageGenerationModel"] = {
             "primary": self.IMAGE_MODEL_REF,
             "timeoutMs": 180000,
         }
+        # npm stable OpenClaw 2026.7.1 uses the capability-specific
+        # imageGenerationModel key. Remove the newer mediaModels shape if a
+        # previous agent_manage run wrote it; stable rejects that whole key.
+        defaults.pop("mediaModels", None)
 
         config["models"] = self._models_config_with_api_key(
             model_key=model_key,
@@ -1785,6 +1799,7 @@ class InstanceManagerV2:
             fallback_base_url=resolved_base_url,
             supported_models=supported_models,
             ai_shop=ai_shop,
+            image_base_url=image_base_url,
         )
 
         self._write_config(
@@ -1793,7 +1808,8 @@ class InstanceManagerV2:
             changed_paths=[
                 "agents.defaults.models",
                 "agents.defaults.model",
-                "agents.defaults.mediaModels.image",
+                "agents.defaults.imageGenerationModel",
+                "agents.defaults.mediaModels",
                 "models",
             ],
             extra={
@@ -1821,6 +1837,7 @@ class InstanceManagerV2:
         fallback_base_url: str,
         supported_models: List[Dict[str, object]],
         ai_shop: Optional[str] = None,
+        image_base_url: Optional[str] = None,
     ) -> Dict[str, object]:
         if models_config is None:
             resolved = {
@@ -1864,7 +1881,7 @@ class InstanceManagerV2:
         )
         if not isinstance(image_provider, dict):
             raise ValueError("OpenAI image provider config must be an object")
-        image_provider["baseUrl"] = fallback_base_url
+        image_provider["baseUrl"] = image_base_url or fallback_base_url
         image_provider["apiKey"] = model_key
         image_provider.setdefault("api", "openai-completions")
         definitions = image_provider.setdefault("models", [])
@@ -1884,6 +1901,19 @@ class InstanceManagerV2:
         if "mode" not in resolved:
             resolved["mode"] = "merge"
         return resolved
+
+    def _image_model_base_url(
+        self,
+        *,
+        selected_base_url: str,
+        official_image_model_available: bool,
+    ) -> str:
+        if official_image_model_available:
+            return selected_base_url
+        for gateway in self.MODEL_GATEWAYS.values():
+            if self._same_url_host(gateway["base_url"], selected_base_url):
+                return gateway["base_url"]
+        raise ValueError(f"Unsupported image fallback baseUrl '{selected_base_url}'")
 
     def _model_provider_keys(self, models_config: Optional[Dict[str, object]]) -> List[str]:
         if not isinstance(models_config, dict):
@@ -2486,6 +2516,9 @@ class InstanceManagerV2:
         models_config: Dict[str, object],
         source_url: str,
     ) -> Dict[str, object]:
+        official_image_model_available = self._catalog_has_official_openai_image_model(
+            models_config
+        )
         chat_models_config = self._filter_catalog_models_config(
             models_config,
             allowed_categories={"chat"},
@@ -2506,7 +2539,27 @@ class InstanceManagerV2:
             "models": models,
             "primary_model": self._select_primary_model_ref(models),
             "models_config": openclaw_models_config,
+            "official_image_model_available": official_image_model_available,
         }
+
+    def _catalog_has_official_openai_image_model(
+        self,
+        models_config: Dict[str, object],
+    ) -> bool:
+        providers = models_config.get("providers")
+        if not isinstance(providers, dict):
+            return False
+        provider = providers.get(self.IMAGE_MODEL_PROVIDER)
+        if not isinstance(provider, dict):
+            return False
+        definitions = provider.get("models")
+        if not isinstance(definitions, list):
+            return False
+        return any(
+            isinstance(item, dict)
+            and str(item.get("id") or "").strip().removeprefix("openai/") == self.IMAGE_MODEL_ID
+            for item in definitions
+        )
 
     def _normalized_catalog_model_entries(
         self,
@@ -2570,6 +2623,9 @@ class InstanceManagerV2:
         return filtered
 
     def _catalog_model_category(self, definition: Dict[str, object]) -> str:
+        model_id = str(definition.get("id") or "").strip()
+        if model_id.removeprefix("openai/") == self.IMAGE_MODEL_ID:
+            return "image"
         category = definition.get("modelCategory")
         if category is None:
             return "chat"
@@ -2671,13 +2727,19 @@ class InstanceManagerV2:
             raise ValueError("--ai-shop model baseUrl must end with /v1")
         return f"{normalized_base_url[:-3]}/{quote(shop_path, safe='')}/v1"
 
-    def _catalog_url_for_model_base_url(self, base_url: str) -> str:
+    def _model_gateway_for_base_url(self, base_url: str) -> Dict[str, str]:
         for gateway in self.MODEL_GATEWAYS.values():
             if gateway["base_url"] == base_url:
-                return gateway["catalog_url"]
+                return gateway
             if self._same_url_host(gateway["base_url"], base_url):
-                return gateway["catalog_url"]
+                return gateway
         raise ValueError(f"Unsupported model baseUrl '{base_url}'")
+
+    def _ai_shop_for_model_base_url(self, base_url: str) -> Optional[str]:
+        parts = [unquote(part) for part in urlparse(base_url).path.split("/") if part]
+        if len(parts) >= 3 and parts[-3].lower() == "aigateway" and parts[-1] == "v1":
+            return parts[-2]
+        return None
 
     def _same_url_host(self, left: str, right: str) -> bool:
         left_host = urlparse(left).netloc
@@ -2742,11 +2804,23 @@ class InstanceManagerV2:
 
     def _configured_media_model_refs(self, config: Dict[str, object]) -> set[str]:
         defaults = config.get("agents", {}).get("defaults", {})
-        media_models = defaults.get("mediaModels", {}) if isinstance(defaults, dict) else {}
-        if not isinstance(media_models, dict):
+        if not isinstance(defaults, dict):
             return set()
+
+        model_configs: List[object] = [
+            defaults.get("imageGenerationModel"),
+            defaults.get("videoGenerationModel"),
+            defaults.get("musicGenerationModel"),
+            defaults.get("voiceModel"),
+        ]
+        # Continue to understand beta/newer configs when listing models, even
+        # though this stable-targeted writer no longer emits mediaModels.
+        media_models = defaults.get("mediaModels", {})
+        if isinstance(media_models, dict):
+            model_configs.extend(media_models.values())
+
         refs: set[str] = set()
-        for model_config in media_models.values():
+        for model_config in model_configs:
             if isinstance(model_config, str) and model_config.strip():
                 refs.add(model_config.strip())
                 continue
@@ -2789,10 +2863,21 @@ class InstanceManagerV2:
                     return api_key.strip()
         raise ValueError("Configured model apiKey not found")
 
-    def _configured_model_base_url_from_config(self, config: Dict[str, object]) -> str:
+    def _configured_model_base_url_from_config(
+        self,
+        config: Dict[str, object],
+        preferred_model_ref: Optional[str] = None,
+    ) -> str:
         providers = config.get("models", {}).get("providers", {})
         if isinstance(providers, dict):
-            for provider in providers.values():
+            preferred_provider = (preferred_model_ref or "").partition("/")[0]
+            provider_names = [
+                *([preferred_provider] if preferred_provider and preferred_provider != self.IMAGE_MODEL_PROVIDER else []),
+                *(name for name in providers if name != self.IMAGE_MODEL_PROVIDER),
+                *providers,
+            ]
+            for provider_name in dict.fromkeys(provider_names):
+                provider = providers.get(provider_name)
                 base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
                 if isinstance(base_url, str) and base_url.strip():
                     return base_url.strip()

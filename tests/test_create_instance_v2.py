@@ -312,14 +312,13 @@ class CreateInstanceV2Test(unittest.TestCase):
                             {"id": "seedance", "modelCategory": "video", "input": ["text", "video"]},
                         ],
                     },
-                    "atomx": {
+                    "openai": {
                         "baseUrl": "https://unitag.dola.fi/aigateway/v1",
                         "api": "openai-completions",
                         "models": [
                             {
-                                "id": "atomx/gpt-image-2",
+                                "id": "gpt-image-2",
                                 "name": "GPT Image 2",
-                                "modelCategory": "image",
                                 "input": ["text", "image"],
                             }
                         ],
@@ -332,6 +331,19 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(result["model_count"], 1)
         self.assertEqual(result["models"][0]["model_ref"], "dolaio/gpt-5.6-sol")
         self.assertEqual(list(result["models_config"]["providers"]), ["dolaio"])
+        self.assertTrue(result["official_image_model_available"])
+        selected_base_url = "https://unitag.dola.fi/aigateway/demo-shop/v1"
+        self.assertEqual(manager._image_model_base_url(
+            selected_base_url=selected_base_url,
+            official_image_model_available=True,
+        ), selected_base_url)
+        self.assertEqual(manager._image_model_base_url(
+            selected_base_url=selected_base_url,
+            official_image_model_available=False,
+        ), "https://unitag.dola.fi/aigateway/v1")
+        self.assertTrue(manager._catalog_has_official_openai_image_model({
+            "providers": {"openai": {"models": [{"id": "gpt-image-2"}]}},
+        }))
 
     def test_model_input_sanitizer_rejects_unknown_and_malformed_values(self):
         manager = InstanceManagerV2(FakeRunner())
@@ -572,7 +584,21 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "openclaw.json"
-            config_path.write_text(json.dumps({"agents": {"defaults": {}}}), encoding="utf-8")
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "mediaModels": {
+                                    "image": {"primary": "openai/old-image-model"},
+                                    "video": {"primary": "video/old-video-model"},
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
             manager = InstanceManagerV2(runner, config_path=str(config_path))
             result = manager._configure_config_models(
                 model_key="shared-key",
@@ -586,16 +612,17 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         self.assertEqual(result["image_model"], "openai/gpt-image-2")
         self.assertEqual(
-            saved_config["agents"]["defaults"]["mediaModels"]["image"],
+            saved_config["agents"]["defaults"]["imageGenerationModel"],
             {"primary": "openai/gpt-image-2", "timeoutMs": 180000},
         )
+        self.assertNotIn("mediaModels", saved_config["agents"]["defaults"])
         self.assertNotIn(
             "openai/gpt-image-2",
             saved_config["agents"]["defaults"]["models"],
         )
         self.assertEqual(
             saved_config["models"]["providers"]["openai"]["baseUrl"],
-            "https://unitag.dola.fi/aigateway/demo-shop/v1",
+            "https://unitag.dola.fi/aigateway/v1",
         )
         self.assertEqual(
             saved_config["models"]["providers"]["openai"]["models"][0]["id"],
@@ -3047,8 +3074,13 @@ class CreateInstanceV2Test(unittest.TestCase):
                         },
                         "models": {
                             "providers": {
+                                "openai": {
+                                    "baseUrl": "https://api.dolaio.cn/aigateway/test/v1",
+                                    "apiKey": "test-key",
+                                    "models": [{"id": "gpt-image-2"}],
+                                },
                                 "unipay-fun": {
-                                    "baseUrl": "https://api.dolaio.cn/aigateway/v1",
+                                    "baseUrl": "https://api.dolaio.cn/aigateway/demo-shop/v1",
                                     "apiKey": "test-key",
                                     "models": [],
                                 }
@@ -3076,7 +3108,14 @@ class CreateInstanceV2Test(unittest.TestCase):
         )
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
+            "https://api.dolaio.cn/aigateway/demo-shop/v1",
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["openai"]["baseUrl"],
             "https://api.dolaio.cn/aigateway/v1",
+        )
+        self.fetch_models_mock.assert_called_once_with(
+            "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider/demo-shop"
         )
         self.assertEqual(result["steps"][0]["step"], "models.fetch_catalog")
         self.assertEqual(result["steps"][1]["step"], "config.configure_models")
