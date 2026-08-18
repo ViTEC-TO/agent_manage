@@ -11,5 +11,8 @@ requires-python = ">=3.9"
 [tool.setuptools.dynamic]
 version = {attr = "agent_manage.__version__"}
 
+[tool.setuptools.package-data]
+agent_manage = ["common_skills/*/SKILL.md", "common_skills/*/agents/*.yaml"]
+
 [project.scripts]
 agent-manage = "agent_manage.cli:main"

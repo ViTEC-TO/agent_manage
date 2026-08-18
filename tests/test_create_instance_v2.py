@@ -268,7 +268,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "name": "DeepSeek V4 Flash",
                         "contextWindow": 1000000,
                         "maxTokens": 128000,
-                        "input": ["text", "image", "audio", "video"],
+                        "input": ["text", "image"],
                         "cost": {"input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheWrite": 0},
                         "reasoning": True,
                     },
@@ -294,7 +294,7 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertNotIn("discount", result["models_config"]["providers"]["official"]["models"][0])
         self.assertEqual(
             result["models_config"]["providers"]["official"]["models"][0]["input"],
-            ["text", "image", "audio", "video"],
+            ["text", "image"],
         )
 
     def test_provider_catalog_removes_image_video_and_audio_models(self):
@@ -350,7 +350,7 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         cases = [
             (["pdf"], ["text"]),
-            (["pdf", "image", "document", "audio"], ["image", "audio"]),
+            (["pdf", "image", "document", "audio"], ["image"]),
             ([], ["text"]),
             ("pdf", ["text"]),
             ({"type": "pdf"}, ["text"]),
@@ -638,17 +638,28 @@ class CreateInstanceV2Test(unittest.TestCase):
             workspace = Path(tmpdir) / "workspace"
             workspace.mkdir()
             agents_path = workspace / "AGENTS.md"
-            agents_path.write_text("# Existing instructions\n", encoding="utf-8")
+            agents_path.write_text(
+                "# Existing instructions\n\n"
+                f"{manager.IMAGE_GENERATION_POLICY_START}\n"
+                "old image rule\n"
+                f"{manager.IMAGE_GENERATION_POLICY_END}\n",
+                encoding="utf-8",
+            )
 
-            first = manager._configure_image_generation_policy([workspace], quality="low")
-            manager._configure_image_generation_policy([workspace], quality="medium")
+            first = manager._configure_runtime_policy([workspace], quality="low")
+            manager._configure_runtime_policy([workspace], quality="medium")
             written = agents_path.read_text(encoding="utf-8")
 
         self.assertEqual(first["quality"], "low")
         self.assertIn("# Existing instructions", written)
         self.assertIn('quality: "medium"', written)
         self.assertNotIn('quality: "low"', written)
-        self.assertEqual(written.count(manager.IMAGE_GENERATION_POLICY_START), 1)
+        self.assertNotIn(manager.IMAGE_GENERATION_POLICY_START, written)
+        self.assertEqual(written.count(manager.RUNTIME_POLICY_START), 1)
+        self.assertIn("`nginx-delivery` Skill", written)
+        self.assertIn("reachable over IPv4", written)
+        self.assertIn("All delivered files and `MEDIA:` attachments", written)
+        self.assertIn("Public file, web, and static deliverables", written)
 
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(
@@ -770,6 +781,22 @@ class CreateInstanceV2Test(unittest.TestCase):
                 (workspace / "skills" / "weather" / "SKILL.md").read_text(encoding="utf-8"),
                 "old weather\n",
             )
+            global_skill = config_path.parent / "skills" / "nginx-delivery" / "SKILL.md"
+            self.assertTrue(global_skill.is_file())
+            self.assertIn("every delivered file", global_skill.read_text(encoding="utf-8"))
+            runtime_policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertEqual(runtime_policy.count(manager.RUNTIME_POLICY_START), 1)
+            for expected_rule in [
+                "Preserve existing and unrelated changes",
+                "after two failures for the same reason",
+                "Never claim unperformed verification",
+                "/usr/local/sbin:/usr/sbin:/sbin",
+                "Do not run long-lived services in the foreground",
+                "All delivered files and `MEDIA:` attachments",
+                "Public file, web, and static deliverables",
+                'quality: "low"',
+            ]:
+                self.assertIn(expected_rule, runtime_policy)
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 saved_config["agents"]["defaults"]["model"]["primary"],
@@ -1902,6 +1929,15 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["steps"][4]["step"], "agents.add[demo]")
             self.assertEqual(result["steps"][5]["step"], "workspace.populate[demo]")
             self.assertEqual(result["steps"][6]["step"], "config.configure_tools")
+            self.assertEqual(result["steps"][7]["step"], "workspace.configure_image_generation")
+            for policy_path in [
+                tmp_path / "data" / "base" / "AGENTS.md",
+                tmp_path / "custom-demo" / "AGENTS.md",
+            ]:
+                policy = policy_path.read_text(encoding="utf-8")
+                self.assertIn("`nginx-delivery` Skill", policy)
+                self.assertIn('quality: "low"', policy)
+            self.assertTrue((tmp_path / "skills" / "nginx-delivery" / "SKILL.md").is_file())
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 saved_config["tools"]["agentToAgent"],

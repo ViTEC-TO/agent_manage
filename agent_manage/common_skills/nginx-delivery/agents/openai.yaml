@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nginx Delivery"
+  short_description: "Deploy public files through nginx with IPv4 URLs"
+  default_prompt: "Use $nginx-delivery to deploy this public file deliverable and return its IPv4-reachable URL."

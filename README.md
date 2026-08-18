@@ -10,7 +10,7 @@ python3 scripts/agentctl.py
 
 ```bash
 python3 scripts/agentctl.py --version
-# agent-manage 0.3.1
+# agent-manage 0.3.2
 ```
 
 发布新版本时同步完成三件事：更新 `__version__`、在 `CHANGELOG.md` 增加对应版本和日期、创建同名 Git tag。
@@ -59,8 +59,9 @@ python3 scripts/agentctl.py --version
 - 图片生成模型固定为 `openai/gpt-image-2`，按 npm stable OpenClaw `2026.7.1-2` 的 schema 写入 `agents.defaults.imageGenerationModel.primary`；不会从目录选择或回退到其他图片模型
 - 如果当前商店目录的官方 provider `openai` 下包含 `gpt-image-2`，图片 provider 使用当前商店的 `baseUrl`；不要求目录额外提供 `modelCategory`
 - 如果当前商店没有官方 `openai/gpt-image-2`，图片使用的 `openai` provider 特例回退到同环境的 `/aigateway/v1`，不添加 `test` 路径；其他 provider 仍使用当前商店 `baseUrl`
-- OpenClaw 暂无配置级图片生成质量字段，因此初始化会向各 agent workspace 的 `AGENTS.md` 写入受管规则；默认调用 `image_generate` 时使用 `quality: "low"`，可通过 `--image-quality low|medium|high|auto` 调整
-- 模型 `input` 只会写入 `text`、`image`、`video`、`audio`；未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
+- 初始化会向各 agent workspace 的 `AGENTS.md` 写入精简的受管运行规则，包括命令安全、IPv4 公网附件、`nginx-delivery` 交付要求和图片默认质量；`image_generate` 默认使用 `quality: "low"`，可通过 `--image-quality low|medium|high|auto` 调整
+- 内置公共 Skill 会同步到 `~/.openclaw/skills/`；当前包含 `nginx-delivery`，用于将明确公开的交付文件、网页和静态资源部署到 nginx、更新索引并返回经过 IPv4 验证的公网 URL
+- 模型 `input` 只会写入 npm stable OpenClaw `2026.7.1-2` 支持的 `text`、`image`；`video`、`audio` 和未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
 - `agents.defaults.models` 会按当前拉取到的模型重建
 - 默认主模型优先使用拉取结果里的推荐模型；如果当前目录里没有推荐模型，则退回到拉取结果里的第一个可用模型
 - 如果模板原先带有 `vllm` 等旧 provider，会在初始化时被拉取到的模型 providers 覆盖
@@ -194,6 +195,7 @@ python3 scripts/agentctl.py create-instance \
 - 如果 workspace 已存在且非空，会跳过该项的 `workspace.populate`
 - 批量追加完成后会写入 `tools.agentToAgent.enabled = true`，并把 `main`、本批次 agent 和多 agent 团队成员合并进
   `tools.agentToAgent.allow`；同时设置 `tools.sessions.visibility = all`
+- 批量追加完成后会为本批次全部 workspace 同步与 `create-instance` 相同的受管运行规则和内置公共 Skill；默认图片质量为 `low`
 - 批量追加完成后不额外执行 `openclaw gateway restart`
 - 返回体会显式给出 `restart_required = false` 和空的 `post_batch_actions`
 

@@ -50,6 +50,8 @@ class InstanceManagerV2:
     IMAGE_MODEL_REF = "openai/gpt-image-2"
     IMAGE_GENERATION_POLICY_START = "<!-- agent_manage:image-generation-policy:start -->"
     IMAGE_GENERATION_POLICY_END = "<!-- agent_manage:image-generation-policy:end -->"
+    RUNTIME_POLICY_START = "<!-- agent_manage:runtime-policy:start -->"
+    RUNTIME_POLICY_END = "<!-- agent_manage:runtime-policy:end -->"
     DEFAULT_MODEL_ENV = "test"
     LOCAL_TEMPLATE_ROOT = "~/.openclaw/templates"
     LOCAL_WORKSPACE_ROOT = "~/.openclaw/data"
@@ -84,7 +86,7 @@ class InstanceManagerV2:
         "reasoning",
     )
     OPENCLAW_MODEL_COST_KEYS = ("input", "output", "cacheRead", "cacheWrite")
-    OPENCLAW_MODEL_INPUT_TYPES = ("text", "image", "video", "audio")
+    OPENCLAW_MODEL_INPUT_TYPES = ("text", "image")
 
     def __init__(
         self,
@@ -221,7 +223,7 @@ class InstanceManagerV2:
             self._run_timed_step(
                 steps,
                 "workspace.configure_image_generation",
-                lambda: self._configure_image_generation_policy(
+                lambda: self._configure_workspace_defaults(
                     [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
                     quality=request.image_quality,
                 ),
@@ -386,7 +388,7 @@ class InstanceManagerV2:
             self._run_timed_step(
                 steps,
                 "workspace.configure_image_generation",
-                lambda: self._configure_image_generation_policy(
+                lambda: self._configure_workspace_defaults(
                     [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
                     quality=request.image_quality,
                 ),
@@ -564,6 +566,14 @@ class InstanceManagerV2:
             "config.configure_tools",
             lambda: self._configure_config_tools([item["agent_name"] for item in agent_results]),
         )
+        workspace_defaults = self._run_timed_step(
+            steps,
+            "workspace.configure_image_generation",
+            lambda: self._configure_workspace_defaults(
+                [Path(str(item["workspace"])) for item in agent_results],
+                quality="low",
+            ),
+        )
 
         return {
             "ok": True,
@@ -573,6 +583,7 @@ class InstanceManagerV2:
             "restart_required": False,
             "post_batch_actions": [],
             "tools_config": tools_result,
+            "workspace_defaults": workspace_defaults,
             "agents": agent_results,
             "steps": steps,
         }
@@ -1555,6 +1566,12 @@ class InstanceManagerV2:
                     add_source(str(item.relative_to(template_dir)))
         return sources
 
+    def _builtin_common_skill_sources(self) -> List[Path]:
+        root = Path(__file__).resolve().parent / "common_skills"
+        if not root.is_dir():
+            raise FileNotFoundError(f"Built-in common skills folder not found: {root}")
+        return sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name)
+
     def _multi_agent_specs_from_template(
         self,
         *,
@@ -1991,7 +2008,20 @@ class InstanceManagerV2:
             "sessions_visibility": "all",
         }
 
-    def _configure_image_generation_policy(
+    def _configure_workspace_defaults(
+        self,
+        workspaces: List[Path],
+        *,
+        quality: str,
+    ) -> Dict[str, object]:
+        skills_result = self._install_common_skills(self._builtin_common_skill_sources())
+        policy_result = self._configure_runtime_policy(workspaces, quality=quality)
+        return {
+            **policy_result,
+            "common_skills": skills_result,
+        }
+
+    def _configure_runtime_policy(
         self,
         workspaces: List[Path],
         *,
@@ -2005,12 +2035,19 @@ class InstanceManagerV2:
 
         policy_block = "\n".join(
             [
-                self.IMAGE_GENERATION_POLICY_START,
-                "## Image generation defaults",
+                self.RUNTIME_POLICY_START,
+                "## Runtime rules",
                 "",
-                "When calling the `image_generate` tool, always pass "
+                "- Preserve existing and unrelated changes; make only necessary changes and avoid destructive or system-wide actions unless explicitly authorized.",
+                "- Run blocking commands separately with timeouts; bound network retries, prefer IPv4, and diagnose or change approach after two failures for the same reason.",
+                "- Never claim unperformed verification; report validation gaps and risks, and inspect final diffs for temporary files, debug code, secrets, or unintended changes.",
+                "- Ensure `PATH` includes `/usr/local/sbin:/usr/sbin:/sbin`; verify software with package/service state or absolute paths, not only `command -v`.",
+                "- Do not run long-lived services in the foreground; verify their process, port, and key logs separately after startup.",
+                "- All delivered files and `MEDIA:` attachments must use real public URLs reachable over IPv4, never local paths or IPv6 addresses; upload first when needed.",
+                "- Public file, web, and static deliverables must follow the `nginx-delivery` Skill; deployment, index update, and a verified public URL are required for completion.",
+                "- When calling `image_generate`, use "
                 f"`quality: \"{resolved_quality}\"` unless the user explicitly requests another quality.",
-                self.IMAGE_GENERATION_POLICY_END,
+                self.RUNTIME_POLICY_END,
             ]
         )
         configured: List[str] = []
@@ -2022,12 +2059,20 @@ class InstanceManagerV2:
             if not workspace.is_dir():
                 raise FileNotFoundError(f"Workspace not found: {workspace}")
             existing = policy_path.read_text(encoding="utf-8") if policy_path.is_file() else ""
-            start = existing.find(self.IMAGE_GENERATION_POLICY_START)
-            end = existing.find(self.IMAGE_GENERATION_POLICY_END)
+            legacy_start = existing.find(self.IMAGE_GENERATION_POLICY_START)
+            legacy_end = existing.find(self.IMAGE_GENERATION_POLICY_END)
+            if (legacy_start == -1) != (legacy_end == -1):
+                raise ValueError(f"Incomplete legacy image policy block: {policy_path}")
+            if legacy_start != -1:
+                legacy_end += len(self.IMAGE_GENERATION_POLICY_END)
+                existing = existing[:legacy_start] + existing[legacy_end:]
+
+            start = existing.find(self.RUNTIME_POLICY_START)
+            end = existing.find(self.RUNTIME_POLICY_END)
             if (start == -1) != (end == -1):
-                raise ValueError(f"Incomplete managed image policy block: {policy_path}")
+                raise ValueError(f"Incomplete managed runtime policy block: {policy_path}")
             if start != -1:
-                end += len(self.IMAGE_GENERATION_POLICY_END)
+                end += len(self.RUNTIME_POLICY_END)
                 updated = existing[:start] + policy_block + existing[end:]
             else:
                 prefix = existing.rstrip()

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 - 2026-08-18
+
+- 新增内置公共 Skill `nginx-delivery`，并将精简运行规则同步到创建及批量追加的全部 agent workspace；旧图片规则区块会自动迁移。
+- 兼容 npm stable OpenClaw `2026.7.1-2`，写入模型配置时仅保留 `text`、`image` 输入类型，避免 `video`、`audio` 导致模型 schema 校验失败。
+
 ## 0.3.1 - 2026-08-16
 
 - 修复与 npm stable OpenClaw `2026.7.1-2` 的配置兼容性：图片生成模型改写到 `agents.defaults.imageGenerationModel`。
