@@ -10,10 +10,23 @@ python3 scripts/agentctl.py
 
 ```bash
 python3 scripts/agentctl.py --version
-# agent-manage 0.3.3
+# agent-manage 0.4.0
 ```
 
 发布新版本时同步完成三件事：更新 `__version__`、在 `CHANGELOG.md` 增加对应版本和日期、创建同名 Git tag。
+
+### 代码结构
+
+- `orchestrator.py`：只负责编排创建实例、本机创建和批量追加 agent
+- `settings.py`：模型环境、默认商店和 URL 构造的唯一来源
+- `model_management.py`：模型目录读取、过滤、路由和 OpenClaw 模型配置
+- `provisioning.py`：模板解压、workspace、依赖、公共 Skill 和运行规则
+- `template_safety.py`：模板名称、路径边界和压缩包解压安全校验
+- `channel_management.py`：Telegram、飞书和微信渠道管理
+- `gateway_management.py`：Gateway 状态、鉴权、重启和 agent 发现
+- `manager_core.py`：配置原子写入、备份、步骤计时和公共错误处理
+
+公开入口仍是 `InstanceManagerV2`，CLI、已有方法名和返回结构保持兼容。
 
 通用说明：
 
@@ -40,21 +53,27 @@ python3 scripts/agentctl.py --version
 - 直接从 `openclaw.json` 的 `agents.list` 检查同名 agent 是否已存在
 - 如果同名 agent 已存在，会跳过 `openclaw agents add`，继续后续步骤
 - 如果 workspace 已存在且非空，会跳过 `workspace.populate`，继续后续步骤
+- 同名 agent 重新执行 `create-instance` 时返回 `mode: reconciled`：更新模型目录、商店路由、公共 Skill 和受管运行规则；保留已有 Gateway Token、仍受支持的默认模型和非空 workspace
+- reconcile 当前不会自动合并新版模板文件到用户已使用的非空 workspace；模板版本三方合并需使用后续专用升级能力
 - `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 里每个模型 provider 的 `apiKey`
-- `--model-env` 默认为 `global`，使用
-  `https://api.dola.io/aigateway/v1` 作为模型调用地址，并从
-  `https://api.dola.io/aigateway/api/frontend/aimodels/byProvider` 拉取模型目录
-- 传 `cn` 时会使用
-  `https://api.dolaio.cn/aigateway/v1` 作为模型调用地址，并从
-  `https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider` 拉取模型目录
-- 传 `test` 时仍使用 `https://unitag.dola.fi`，原有测试环境地址保持不变
+- 模型环境根地址集中维护，`--model-env` 默认是 `global`：
+
+  | 环境 | 网关根地址 |
+  | --- | --- |
+  | `global` | `https://api.dola.io` |
+  | `test` | `https://unitag.dola.fi` |
+  | `cn` | `https://api.dolaio.cn` |
+
+- `--ai-shop` 默认是 `shop`，因此默认模型目录为
+  `<网关根地址>/aigateway/api/frontend/aimodels/byProvider/shop`，默认模型调用地址为
+  `<网关根地址>/aigateway/shop/v1`
+- 商店名只允许一个安全 URL 路径段；`.`、`..`、嵌套路径和控制字符会被拒绝
 - 创建时会生成新的 `gateway_token`，写入 `gateway.auth.token`，并在返回结果里带回
-- 默认 `global` 环境创建时会先从
-  `https://api.dola.io/aigateway/api/frontend/aimodels/byProvider`
+- 默认 `global` 环境创建时会先从 `https://api.dola.io/aigateway/api/frontend/aimodels/byProvider/shop`
   拉取当前激活模型目录，再写入 `~/.openclaw/openclaw.json`
-- 使用 `/byProvider` 模型目录的环境可选传 `--ai-shop {shoppath}`，模型目录会改为从
+- `--ai-shop` 默认为 `shop`；传其他 `{shoppath}` 时，模型目录会改为从
   当前环境的 `.../aigateway/api/frontend/aimodels/byProvider/{shoppath}`
-  拉取；不传时仍使用不带 `{shoppath}` 的 `/byProvider`
+  拉取
 - 传 `--ai-shop {shoppath}` 时，写入 OpenClaw 的每个模型 provider `baseUrl` 都会统一写成
   当前环境的 `.../aigateway/{shoppath}/v1` 格式；具体来源 provider 保留在
   `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
@@ -120,7 +139,7 @@ python3 scripts/agentctl.py create-instance \
 - `--local`
 - `--agent-zip`
 - `--model-env global|test|cn`（默认 `global`）
-- `--ai-shop`
+- `--ai-shop`（默认 `shop`）
 - `--model`
 - `--image-quality low|medium|high|auto`（默认 `low`）
 - `--workspace-root`

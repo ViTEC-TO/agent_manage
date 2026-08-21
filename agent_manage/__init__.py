@@ -1,6 +1,6 @@
 """V2 instance management flow for OpenClaw agent provisioning."""
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"
 
 from .cli import main
 

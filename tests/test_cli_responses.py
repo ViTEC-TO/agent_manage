@@ -4,8 +4,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from agent_manage.cli import main as agent_manage_main
 from agent_manage import __version__
+from agent_manage.cli import main as agent_manage_main
 from agent_manage.models import AddAgentsRequest
 from agent_manage.response import (
     TYPE_CODE_INVALID_ARGUMENT,
@@ -45,6 +45,7 @@ class CliResponseTest(unittest.TestCase):
         self.assertIn("serverTimeStamp", payload)
         request = manager_cls.return_value.create_instance.call_args.args[0]
         self.assertEqual(request.model_env, "global")
+        self.assertEqual(request.ai_shop, "shop")
 
     def test_agent_manage_not_found_error_is_structured(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
@@ -108,14 +109,14 @@ class CliResponseTest(unittest.TestCase):
                         "--model-key",
                         "test-key",
                         "--ai-shop",
-                        "maomaoshuo",
+                        "shop",
                     ]
                 )
 
         request = manager_cls.return_value.create_instance.call_args.args[0]
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
-        self.assertEqual(request.ai_shop, "maomaoshuo")
+        self.assertEqual(request.ai_shop, "shop")
         self.assertEqual(payload["result"]["agent_name"], "base")
 
     def test_agent_manage_create_instance_accepts_image_quality_default(self):

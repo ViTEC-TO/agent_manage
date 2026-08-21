@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from typing import List, Optional
 
 from . import __version__
 from .local import LocalRunner
-from .response import (
-    JsonArgumentParser,
-    build_error_response,
-    build_success_response,
-    print_json,
-)
-
 from .models import (
     AddAgentRequest,
     AddAgentsRequest,
@@ -27,9 +19,18 @@ from .models import (
     SetModelRequest,
 )
 from .orchestrator import InstanceManagerV2
+from .response import (
+    JsonArgumentParser,
+    build_error_response,
+    build_success_response,
+    print_json,
+)
 
 MODEL_ENV_CHOICES = sorted(InstanceManagerV2.MODEL_GATEWAYS.keys())
 DEFAULT_MODEL_ENV = InstanceManagerV2.DEFAULT_MODEL_ENV
+DEFAULT_AI_SHOP = InstanceManagerV2.DEFAULT_AI_SHOP
+DEFAULT_IMAGE_QUALITY = InstanceManagerV2.DEFAULT_IMAGE_QUALITY
+IMAGE_QUALITY_CHOICES = InstanceManagerV2.IMAGE_QUALITY_CHOICES
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -52,12 +53,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         choices=MODEL_ENV_CHOICES,
         default=DEFAULT_MODEL_ENV,
     )
-    create_instance.add_argument("--ai-shop")
+    create_instance.add_argument(
+        "--ai-shop",
+        default=DEFAULT_AI_SHOP,
+        help=f"model shop path (default: {DEFAULT_AI_SHOP})",
+    )
     create_instance.add_argument("--model")
     create_instance.add_argument(
         "--image-quality",
-        choices=["low", "medium", "high", "auto"],
-        default="low",
+        choices=IMAGE_QUALITY_CHOICES,
+        default=DEFAULT_IMAGE_QUALITY,
     )
     create_instance.add_argument("--workspace-root")
     create_instance.add_argument("--no-rollback", action="store_true")
@@ -99,13 +104,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_weixin_bot.add_argument("--route-tag")
     add_weixin_bot.add_argument("--cdn-base-url")
 
-    check_server_status = subparsers.add_parser("check-server-status")
+    subparsers.add_parser("check-server-status")
 
-    tg_bot_status = subparsers.add_parser("tg-bot-status")
+    subparsers.add_parser("tg-bot-status")
 
-    feishu_bot_status = subparsers.add_parser("feishu-bot-status")
+    subparsers.add_parser("feishu-bot-status")
 
-    weixin_bot_status = subparsers.add_parser("weixin-bot-status")
+    subparsers.add_parser("weixin-bot-status")
 
     delete_tg_bot = subparsers.add_parser("delete-tg-bot")
     delete_tg_bot.add_argument("--bot-name", required=True)
@@ -116,18 +121,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     delete_weixin_bot = subparsers.add_parser("delete-weixin-bot")
     delete_weixin_bot.add_argument("--ilink-bot-id", required=True)
 
-    agents_list = subparsers.add_parser("agents-list")
+    subparsers.add_parser("agents-list")
 
     set_model = subparsers.add_parser("set-model")
     set_model.add_argument("--model", required=True)
 
-    current_model = subparsers.add_parser("current-model")
+    subparsers.add_parser("current-model")
 
-    models = subparsers.add_parser("models")
+    subparsers.add_parser("models")
 
-    update_model = subparsers.add_parser("update-model")
+    subparsers.add_parser("update-model")
 
-    current_gateway_token = subparsers.add_parser("current-gateway-token")
+    subparsers.add_parser("current-gateway-token")
 
     try:
         args = parser.parse_args(argv)

@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .settings import DEFAULT_AI_SHOP, DEFAULT_IMAGE_QUALITY, DEFAULT_MODEL_ENV
+
 
 @dataclass
 class CreateInstanceRequest:
     template_name: str = ""
     model_key: str = ""
-    model_env: str = "global"
-    ai_shop: str | None = None
+    model_env: str = DEFAULT_MODEL_ENV
+    ai_shop: str = DEFAULT_AI_SHOP
     model: str | None = None
-    image_quality: str = "low"
+    image_quality: str = DEFAULT_IMAGE_QUALITY
     workspace_root: str = "~/data"
     rollback_on_fail: bool = True
     agent_zip: str | None = None

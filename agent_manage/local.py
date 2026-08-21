@@ -171,9 +171,12 @@ class LocalRunner:
 
         npm_bin = str(Path(home) / ".npm-global" / "bin")
         path_parts = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
-        if npm_bin not in path_parts:
-            env["PATH"] = os.pathsep.join([npm_bin, *path_parts]) if path_parts else npm_bin
-            self._log(f"env: prepended PATH with {npm_bin}")
+        required_paths = [npm_bin, "/usr/local/sbin", "/usr/sbin", "/sbin"]
+        missing_paths = [path for path in required_paths if path not in path_parts]
+        if missing_paths:
+            path_parts = [*missing_paths, *path_parts]
+            env["PATH"] = os.pathsep.join(path_parts)
+            self._log(f"env: prepended PATH with {os.pathsep.join(missing_paths)}")
 
         self._log(
             "env: "

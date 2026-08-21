@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 from agent_manage.local import CommandError, CommandResult
 from agent_manage.models import (
-    AddAgentsRequest,
     AddAgentRequest,
+    AddAgentsRequest,
     AddFeishuBotRequest,
     AddTelegramBotRequest,
     AddWeixinBotRequest,
@@ -22,6 +22,11 @@ from agent_manage.models import (
     SetModelRequest,
 )
 from agent_manage.orchestrator import InstanceManagerV2
+from agent_manage.settings import MODEL_GATEWAY_CONFIGS
+
+GLOBAL_GATEWAY_ORIGIN = MODEL_GATEWAY_CONFIGS["global"].origin
+TEST_GATEWAY_ORIGIN = MODEL_GATEWAY_CONFIGS["test"].origin
+CN_GATEWAY_ORIGIN = MODEL_GATEWAY_CONFIGS["cn"].origin
 
 
 class FakeRunner:
@@ -97,6 +102,11 @@ class FailingPopulateManager(InstanceManagerV2):
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / "partial.txt").write_text("partial\n", encoding="utf-8")
         raise RuntimeError("populate failed")
+
+
+class FailingWorkspaceDefaultsManager(InstanceManagerV2):
+    def _configure_workspace_defaults(self, workspaces, *, quality):
+        raise RuntimeError("workspace defaults failed")
 
 
 class CreateInstanceV2Test(unittest.TestCase):
@@ -212,7 +222,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             "providers": {
                 "dolaio": {
                     "displayName": "Dola.io",
-                    "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
+                    "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/dolaio/v1",
                     "api": "openai-completions",
                     "apiKey": "",
                     "models": [
@@ -230,7 +240,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 },
                 "official": {
                     "displayName": "Official",
-                    "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                    "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/v1",
                     "api": "openai-completions",
                     "apiKey": "",
                     "models": [
@@ -251,10 +261,10 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         result = manager._normalize_provider_catalog_models(
             models_config=models_config,
-            source_url="https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",
+            source_url=f"{TEST_GATEWAY_ORIGIN}/aigateway/api/frontend/aimodels/byProvider",
         )
 
-        self.assertEqual(result["source_url"], "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider")
+        self.assertEqual(result["source_url"], f"{TEST_GATEWAY_ORIGIN}/aigateway/api/frontend/aimodels/byProvider")
         self.assertEqual(result["model_count"], 2)
         self.assertEqual(
             result["models"],
@@ -304,7 +314,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "mode": "merge",
                 "providers": {
                     "dolaio": {
-                        "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                        "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/v1",
                         "api": "openai-completions",
                         "models": [
                             {"id": "gpt-5.6-sol", "modelCategory": "chat", "input": ["text", "image"]},
@@ -313,7 +323,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                         ],
                     },
                     "openai": {
-                        "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                        "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/v1",
                         "api": "openai-completions",
                         "models": [
                             {
@@ -332,7 +342,7 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(result["models"][0]["model_ref"], "dolaio/gpt-5.6-sol")
         self.assertEqual(list(result["models_config"]["providers"]), ["dolaio"])
         self.assertTrue(result["official_image_model_available"])
-        selected_base_url = "https://unitag.dola.fi/aigateway/demo-shop/v1"
+        selected_base_url = f"{TEST_GATEWAY_ORIGIN}/aigateway/shop/v1"
         self.assertEqual(manager._image_model_base_url(
             selected_base_url=selected_base_url,
             official_image_model_available=True,
@@ -340,10 +350,37 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(manager._image_model_base_url(
             selected_base_url=selected_base_url,
             official_image_model_available=False,
-        ), "https://unitag.dola.fi/aigateway/v1")
+        ), f"{TEST_GATEWAY_ORIGIN}/aigateway/v1")
         self.assertTrue(manager._catalog_has_official_openai_image_model({
             "providers": {"openai": {"models": [{"id": "gpt-image-2"}]}},
         }))
+
+    def test_provider_prefixed_model_id_is_normalized_once(self):
+        manager = InstanceManagerV2(FakeRunner())
+
+        result = manager._normalize_provider_catalog_models(
+            models_config={
+                "providers": {
+                    "dolaio": {
+                        "models": [
+                            {
+                                "id": "dolaio/gpt-5.4",
+                                "modelCategory": "chat",
+                                "input": ["text"],
+                            }
+                        ]
+                    }
+                }
+            },
+            source_url=InstanceManagerV2.MODEL_CATALOG_URL,
+        )
+
+        self.assertEqual(result["models"][0]["id"], "gpt-5.4")
+        self.assertEqual(result["models"][0]["model_ref"], "dolaio/gpt-5.4")
+        self.assertEqual(
+            result["models_config"]["providers"]["dolaio"]["models"][0]["id"],
+            "gpt-5.4",
+        )
 
     def test_model_input_sanitizer_rejects_unknown_and_malformed_values(self):
         manager = InstanceManagerV2(FakeRunner())
@@ -499,7 +536,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             "providers": {
                 "dolaio": {
                     "displayName": "Dola.io",
-                    "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
+                    "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/dolaio/v1",
                     "api": "openai-completions",
                     "apiKey": "",
                     "models": [
@@ -517,7 +554,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 },
                 "official": {
                     "displayName": "Official",
-                    "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                    "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/v1",
                     "api": "openai-completions",
                     "apiKey": "",
                     "models": [
@@ -537,7 +574,7 @@ class CreateInstanceV2Test(unittest.TestCase):
         }
         catalog_result = InstanceManagerV2(FakeRunner())._normalize_provider_catalog_models(
             models_config=models_config,
-            source_url="https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",
+            source_url=f"{TEST_GATEWAY_ORIGIN}/aigateway/api/frontend/aimodels/byProvider",
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -570,7 +607,11 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(saved_config["models"]["providers"]["official"]["apiKey"], "shared-key")
         self.assertEqual(
             saved_config["models"]["providers"]["dolaio"]["baseUrl"],
-            "https://unitag.dola.fi/aigateway/dolaio/v1",
+            f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/shop/v1",
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["official"]["baseUrl"],
+            f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/shop/v1",
         )
         self.assertEqual(
             saved_config["models"]["providers"]["official"]["models"][0]["id"],
@@ -604,7 +645,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 model_key="shared-key",
                 supported_models=self.sample_supported_models,
                 base_url=InstanceManagerV2.MODEL_GATEWAYS["test"]["base_url"],
-                ai_shop="demo-shop",
+                ai_shop="shop",
             )
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
 
@@ -622,7 +663,7 @@ class CreateInstanceV2Test(unittest.TestCase):
         )
         self.assertEqual(
             saved_config["models"]["providers"]["openai"]["baseUrl"],
-            "https://unitag.dola.fi/aigateway/v1",
+            f"{TEST_GATEWAY_ORIGIN}/aigateway/v1",
         )
         self.assertEqual(
             saved_config["models"]["providers"]["openai"]["models"][0]["id"],
@@ -824,7 +865,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
             self.assertEqual(
                 saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-                "https://api.dola.io/aigateway/v1",
+                f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/shop/v1",
             )
             self.assertEqual(
                 saved_config["models"]["providers"]["unipay-fun"]["models"],
@@ -858,7 +899,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
             self.assertEqual(result["steps"][-3]["step"], "config.configure_gateway_auth")
 
-    def test_create_instance_appends_ai_shop_to_by_provider_catalog_url(self):
+    def test_create_instance_uses_default_shop_for_catalog_and_model_base_url(self):
         runner = FakeRunner()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -880,7 +921,6 @@ class CreateInstanceV2Test(unittest.TestCase):
                 CreateInstanceRequest(
                     template_name="base",
                     model_key="test-key",
-                    ai_shop="maomaoshuo",
                     workspace_root=str(workspace_root),
                 )
             )
@@ -888,12 +928,12 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.fetch_models_mock.assert_called_once_with(
-            "https://api.dola.io/aigateway/api/frontend/aimodels/byProvider/maomaoshuo"
+            f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/api/frontend/aimodels/byProvider/shop"
         )
-        self.assertEqual(result["ai_shop"], "maomaoshuo")
+        self.assertEqual(result["ai_shop"], "shop")
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-            "https://api.dola.io/aigateway/maomaoshuo/v1",
+            f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/shop/v1",
         )
 
     def test_configure_models_overrides_provider_catalog_base_urls_with_shop_base_url(self):
@@ -903,7 +943,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "mode": "merge",
                 "providers": {
                     "dolaio": {
-                        "baseUrl": "https://unitag.dola.fi/aigateway/dolaio/v1",
+                        "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/dolaio/v1",
                         "api": "openai-completions",
                         "models": [
                             {
@@ -918,7 +958,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                         ],
                     },
                     "official": {
-                        "baseUrl": "https://unitag.dola.fi/aigateway/v1",
+                        "baseUrl": f"{TEST_GATEWAY_ORIGIN}/aigateway/v1",
                         "api": "openai-completions",
                         "models": [
                             {
@@ -934,7 +974,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                     },
                 },
             },
-            source_url="https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/aaa",
+            source_url=f"{TEST_GATEWAY_ORIGIN}/aigateway/api/frontend/aimodels/byProvider/shop",
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -946,19 +986,19 @@ class CreateInstanceV2Test(unittest.TestCase):
                 model_key="shared-key",
                 supported_models=catalog_result["models"],
                 models_config=catalog_result["models_config"],
-                ai_shop="aaa",
+                ai_shop="shop",
             )
 
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result["base_url"], "https://api.dola.io/aigateway/aaa/v1")
+        self.assertEqual(result["base_url"], f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/shop/v1")
         self.assertEqual(
             saved_config["models"]["providers"]["dolaio"]["baseUrl"],
-            "https://api.dola.io/aigateway/aaa/v1",
+            f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/shop/v1",
         )
         self.assertEqual(
             saved_config["models"]["providers"]["official"]["baseUrl"],
-            "https://api.dola.io/aigateway/aaa/v1",
+            f"{GLOBAL_GATEWAY_ORIGIN}/aigateway/shop/v1",
         )
         self.assertIn("dolaio/gpt-5.4", saved_config["agents"]["defaults"]["models"])
 
@@ -1051,40 +1091,19 @@ class CreateInstanceV2Test(unittest.TestCase):
         manager = InstanceManagerV2(FakeRunner())
         catalog_url = manager._catalog_url_for_ai_shop(
             InstanceManagerV2.MODEL_GATEWAYS["cn"]["catalog_url"],
-            "maomaoshuo",
+            "shop",
         )
 
         self.assertEqual(
             catalog_url,
-            "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider/maomaoshuo",
+            f"{CN_GATEWAY_ORIGIN}/aigateway/api/frontend/aimodels/byProvider/shop",
         )
         self.assertEqual(
             manager._model_base_url_for_ai_shop(
                 InstanceManagerV2.MODEL_GATEWAYS["cn"]["base_url"],
-                "maomaoshuo",
+                "shop",
             ),
-            "https://api.dolaio.cn/aigateway/maomaoshuo/v1",
-        )
-
-    def test_model_gateway_addresses_and_global_default(self):
-        self.assertEqual(InstanceManagerV2.DEFAULT_MODEL_ENV, "global")
-        self.assertEqual(CreateInstanceRequest().model_env, "global")
-        self.assertEqual(
-            InstanceManagerV2.MODEL_GATEWAYS,
-            {
-                "global": {
-                    "base_url": "https://api.dola.io/aigateway/v1",
-                    "catalog_url": "https://api.dola.io/aigateway/api/frontend/aimodels/byProvider",
-                },
-                "test": {
-                    "base_url": "https://unitag.dola.fi/aigateway/v1",
-                    "catalog_url": "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",
-                },
-                "cn": {
-                    "base_url": "https://api.dolaio.cn/aigateway/v1",
-                    "catalog_url": "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider",
-                },
-            },
+            f"{CN_GATEWAY_ORIGIN}/aigateway/shop/v1",
         )
 
     def test_create_instance_installs_multi_agent_template_members_from_agents_folder(self):
@@ -1221,10 +1240,10 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result["base_url"], "https://api.dolaio.cn/aigateway/v1")
+        self.assertEqual(result["base_url"], f"{CN_GATEWAY_ORIGIN}/aigateway/shop/v1")
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-            "https://api.dolaio.cn/aigateway/v1",
+            f"{CN_GATEWAY_ORIGIN}/aigateway/shop/v1",
         )
         self.assertEqual(saved_config["models"]["providers"]["unipay-fun"]["apiKey"], "cn-key")
 
@@ -1403,11 +1422,28 @@ class CreateInstanceV2Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             archive_path = tmp_path / "template" / "base.zip"
-            template_dir = tmp_path / "template" / "base"
             config_path = tmp_path / ".openclaw" / "openclaw.json"
             archive_path.parent.mkdir(parents=True)
             self._write_archive(archive_path, {"main.py": "print('x')\n"})
-            self._write_host_config(config_path, {"agents": {"list": [{"id": "base"}]}})
+            self._write_host_config(
+                config_path,
+                {
+                    "agents": {
+                        "list": [{"id": "base"}],
+                        "defaults": {
+                            "model": {
+                                "primary": "unipay-fun/claude-sonnet-4-6",
+                            }
+                        },
+                    },
+                    "gateway": {
+                        "auth": {
+                            "mode": "token",
+                            "token": "existing-gateway-token",
+                        }
+                    },
+                },
+            )
 
             manager = InstanceManagerV2(
                 runner,
@@ -1423,7 +1459,9 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
-            self.assertIsInstance(result["gateway_token"], str)
+            self.assertEqual(result["mode"], "reconciled")
+            self.assertEqual(result["gateway_token"], "existing-gateway-token")
+            self.assertTrue(result["gateway_token_preserved"])
             self.assertEqual(result["steps"][1]["step"], "agents.add")
             self.assertEqual(
                 result["steps"][1]["result"],
@@ -1432,6 +1470,19 @@ class CreateInstanceV2Test(unittest.TestCase):
                     "reason": "agent_exists",
                     "agent_name": "base",
                 },
+            )
+            self.assertEqual(
+                result["steps"][5]["step"],
+                "config.preserve_gateway_auth",
+            )
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved_config["agents"]["defaults"]["model"]["primary"],
+                "unipay-fun/claude-sonnet-4-6",
+            )
+            self.assertEqual(
+                saved_config["gateway"]["auth"]["token"],
+                "existing-gateway-token",
             )
             self.assertEqual(runner.calls, [])
             self.assertIn("agent exists, skip add: base", runner.logs)
@@ -1710,6 +1761,45 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertFalse((tmp_path / "template" / "base").exists())
             self.assertEqual(runner.calls[0][:4], ["openclaw", "agents", "add", "base"])
             self.assertEqual(result["steps"][-3]["step"], "config.configure_gateway_auth")
+
+    def test_invalid_shop_or_image_quality_fails_before_instance_mutation(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            template_root.mkdir()
+            self._write_archive(template_root / "base.zip", {"SOUL.md": "base\n"})
+            config_path = tmp_path / "openclaw.json"
+            self._write_host_config(config_path, {"agents": {"list": []}})
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            invalid_requests = [
+                CreateInstanceRequest(
+                    template_name="base",
+                    model_key="test-key",
+                    ai_shop="../other",
+                    workspace_root=str(tmp_path / "data"),
+                ),
+                CreateInstanceRequest(
+                    template_name="base",
+                    model_key="test-key",
+                    image_quality="ultra",
+                    workspace_root=str(tmp_path / "data"),
+                ),
+            ]
+            for request in invalid_requests:
+                with self.subTest(request=request):
+                    with self.assertRaises(ValueError):
+                        manager.create_instance(request)
+
+            self.assertEqual(runner.calls, [])
+            self.assertFalse((template_root / "base").exists())
+            self.assertFalse((tmp_path / "data").exists())
 
     def test_add_tg_bot_generates_name_and_writes_public_binding(self):
         runner = FakeRunner(
@@ -2477,6 +2567,20 @@ class CreateInstanceV2Test(unittest.TestCase):
                 ["openclaw", "gateway", "status", "--require-rpc", "--json"],
             )
 
+    def test_gateway_port_check_does_not_match_longer_port_number(self):
+        runner = FakeRunner()
+        manager = InstanceManagerV2(runner)
+        longer_port_result = CommandResult(
+            argv=["ss", "-ltn"],
+            command_text="ss -ltn",
+            returncode=0,
+            stdout="LISTEN 0 511 0.0.0.0:188890 0.0.0.0:*\n",
+            stderr="",
+        )
+
+        with patch.object(runner, "run", return_value=longer_port_result):
+            self.assertFalse(manager._gateway_port_listening())
+
     def test_get_tg_bot_status_returns_bound_bot_count(self):
         runner = FakeRunner()
 
@@ -3132,12 +3236,12 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "models": {
                             "providers": {
                                 "openai": {
-                                    "baseUrl": "https://api.dolaio.cn/aigateway/test/v1",
+                                    "baseUrl": f"{CN_GATEWAY_ORIGIN}/aigateway/test/v1",
                                     "apiKey": "test-key",
                                     "models": [{"id": "gpt-image-2"}],
                                 },
                                 "unipay-fun": {
-                                    "baseUrl": "https://api.dolaio.cn/aigateway/demo-shop/v1",
+                                    "baseUrl": f"{CN_GATEWAY_ORIGIN}/aigateway/shop/v1",
                                     "apiKey": "test-key",
                                     "models": [],
                                 }
@@ -3165,14 +3269,14 @@ class CreateInstanceV2Test(unittest.TestCase):
         )
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-            "https://api.dolaio.cn/aigateway/demo-shop/v1",
+            f"{CN_GATEWAY_ORIGIN}/aigateway/shop/v1",
         )
         self.assertEqual(
             saved_config["models"]["providers"]["openai"]["baseUrl"],
-            "https://api.dolaio.cn/aigateway/v1",
+            f"{CN_GATEWAY_ORIGIN}/aigateway/v1",
         )
         self.fetch_models_mock.assert_called_once_with(
-            "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider/demo-shop"
+            f"{CN_GATEWAY_ORIGIN}/aigateway/api/frontend/aimodels/byProvider/shop"
         )
         self.assertEqual(result["steps"][0]["step"], "models.fetch_catalog")
         self.assertEqual(result["steps"][1]["step"], "config.configure_models")
@@ -3303,6 +3407,200 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(result["config_path"], str(config_path.resolve()))
         self.assertEqual(result["config_exists"], True)
         self.assertEqual(runner.calls, [])
+
+    def test_template_and_agent_names_cannot_escape_managed_roots(self):
+        manager = InstanceManagerV2(FakeRunner())
+
+        for unsafe_name in ("../outside", "nested/agent", "nested\\agent", ".", ".."):
+            with self.subTest(unsafe_name=unsafe_name):
+                with self.assertRaisesRegex(ValueError, "path-safe"):
+                    manager.resolve_agent_name(
+                        CreateInstanceRequest(template_name=unsafe_name)
+                    )
+                with self.assertRaisesRegex(ValueError, "path-safe"):
+                    manager.resolve_add_agent_workspace(
+                        AddAgentRequest(agent_name=unsafe_name),
+                        "~/data",
+                    )
+
+    def test_unsafe_archive_member_is_rejected_before_existing_template_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            archive_path = tmp_path / "base.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("../escaped.txt", "unsafe\n")
+            template_dir = tmp_path / "template" / "base"
+            template_dir.mkdir(parents=True)
+            original = template_dir / "original.txt"
+            original.write_text("keep\n", encoding="utf-8")
+
+            manager = InstanceManagerV2(FakeRunner())
+            with self.assertRaisesRegex(ValueError, "Unsafe template archive member"):
+                manager._prepare_template_dir(archive_path, template_dir)
+
+            self.assertEqual(original.read_text(encoding="utf-8"), "keep\n")
+            self.assertFalse((tmp_path / "escaped.txt").exists())
+
+    def test_manifest_paths_cannot_escape_template_or_workspace_roots(self):
+        manager = InstanceManagerV2(FakeRunner())
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_dir = tmp_path / "template"
+            template_dir.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "escapes template root"):
+                manager._common_skill_sources_from_manifest(
+                    template_dir,
+                    {"commonSkillFolders": ["../outside"]},
+                )
+
+            with self.assertRaisesRegex(ValueError, "escapes template root"):
+                manager._multi_agent_specs_from_template(
+                    template_dir=template_dir,
+                    manifest={
+                        "agents": [
+                            {
+                                "name": "helper",
+                                "source": "../outside",
+                            }
+                        ]
+                    },
+                    primary_agent_name="base",
+                    workspace_root=str(tmp_path / "workspaces"),
+                    fallback_model=None,
+                )
+
+            agent_dir = template_dir / "agents" / "helper"
+            agent_dir.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "escapes workspace_root"):
+                manager._multi_agent_specs_from_template(
+                    template_dir=template_dir,
+                    manifest={
+                        "agents": [
+                            {
+                                "name": "helper",
+                                "source": "agents/helper",
+                                "workspace": "../../outside",
+                            }
+                        ]
+                    },
+                    primary_agent_name="base",
+                    workspace_root=str(tmp_path / "workspaces"),
+                    fallback_model=None,
+                )
+
+    def test_yaml_fallback_parser_supports_string_skill_lists(self):
+        manager = InstanceManagerV2(FakeRunner())
+
+        manifest = manager._parse_template_manifest_yaml_subset(
+            "\n".join(
+                [
+                    "id: demo",
+                    "commonSkillFolders:",
+                    "  - common-skills/first",
+                    "  - path: common-skills/second",
+                    "    installScope: all_agents",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            manifest["commonSkillFolders"],
+            [
+                "common-skills/first",
+                {
+                    "path": "common-skills/second",
+                    "installScope": "all_agents",
+                },
+            ],
+        )
+
+    def test_rollback_preserves_preexisting_nonempty_workspace(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            template_root.mkdir()
+            self._write_archive(template_root / "base.zip", {"SOUL.md": "new\n"})
+            cached_template = template_root / "base"
+            cached_template.mkdir()
+            (cached_template / "SOUL.md").write_text("old\n", encoding="utf-8")
+            workspace = tmp_path / "data" / "base"
+            workspace.mkdir(parents=True)
+            existing_file = workspace / "MEMORY.md"
+            existing_file.write_text("user memory\n", encoding="utf-8")
+            config_path = tmp_path / "openclaw.json"
+            self._write_host_config(config_path, {"agents": {"list": []}})
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+            self.fetch_models_mock.side_effect = RuntimeError("catalog unavailable")
+
+            with self.assertRaises(RuntimeError):
+                manager.create_instance(
+                    CreateInstanceRequest(
+                        template_name="base",
+                        model_key="test-key",
+                        workspace_root=str(tmp_path / "data"),
+                    )
+                )
+
+            self.assertEqual(existing_file.read_text(encoding="utf-8"), "user memory\n")
+            self.assertTrue(workspace.is_dir())
+            self.assertEqual(
+                (cached_template / "SOUL.md").read_text(encoding="utf-8"),
+                "new\n",
+            )
+
+    def test_late_create_failure_restores_original_config_snapshot(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            template_root.mkdir()
+            self._write_archive(template_root / "base.zip", {"SOUL.md": "base\n"})
+            config_path = tmp_path / "openclaw.json"
+            self._write_host_config(
+                config_path,
+                {
+                    "agents": {"list": []},
+                    "gateway": {
+                        "auth": {
+                            "mode": "token",
+                            "token": "original-token",
+                        }
+                    },
+                    "channels": {"telegram": {"enabled": True}},
+                },
+            )
+            original_config = config_path.read_bytes()
+            manager = FailingWorkspaceDefaultsManager(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            with self.assertRaises(RuntimeError) as raised:
+                manager.create_instance(
+                    CreateInstanceRequest(
+                        template_name="base",
+                        model_key="new-model-key",
+                        workspace_root=str(tmp_path / "data"),
+                    )
+                )
+
+            payload = json.loads(str(raised.exception))
+            self.assertEqual(config_path.read_bytes(), original_config)
+            self.assertEqual(
+                payload["rollback"][-1]["step"],
+                "rollback.config.restore",
+            )
+            self.assertTrue(payload["rollback"][-1]["result"]["restored"])
 
     def _write_archive(self, archive_path: Path, files):
         with zipfile.ZipFile(archive_path, "w") as archive:
