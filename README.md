@@ -10,7 +10,7 @@ python3 scripts/agentctl.py
 
 ```bash
 python3 scripts/agentctl.py --version
-# agent-manage 0.3.2
+# agent-manage 0.3.3
 ```
 
 发布新版本时同步完成三件事：更新 `__version__`、在 `CHANGELOG.md` 增加对应版本和日期、创建同名 Git tag。
@@ -41,18 +41,22 @@ python3 scripts/agentctl.py --version
 - 如果同名 agent 已存在，会跳过 `openclaw agents add`，继续后续步骤
 - 如果 workspace 已存在且非空，会跳过 `workspace.populate`，继续后续步骤
 - `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 里每个模型 provider 的 `apiKey`
-- `--model-env` 默认为 `test`；传 `cn` 时会使用
+- `--model-env` 默认为 `global`，使用
+  `https://api.dola.io/aigateway/v1` 作为模型调用地址，并从
+  `https://api.dola.io/aigateway/api/frontend/aimodels/byProvider` 拉取模型目录
+- 传 `cn` 时会使用
   `https://api.dolaio.cn/aigateway/v1` 作为模型调用地址，并从
   `https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider` 拉取模型目录
+- 传 `test` 时仍使用 `https://unitag.dola.fi`，原有测试环境地址保持不变
 - 创建时会生成新的 `gateway_token`，写入 `gateway.auth.token`，并在返回结果里带回
-- 默认 `test` 环境创建时会先从
-  `https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider`
+- 默认 `global` 环境创建时会先从
+  `https://api.dola.io/aigateway/api/frontend/aimodels/byProvider`
   拉取当前激活模型目录，再写入 `~/.openclaw/openclaw.json`
 - 使用 `/byProvider` 模型目录的环境可选传 `--ai-shop {shoppath}`，模型目录会改为从
-  `https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/{shoppath}`
+  当前环境的 `.../aigateway/api/frontend/aimodels/byProvider/{shoppath}`
   拉取；不传时仍使用不带 `{shoppath}` 的 `/byProvider`
 - 传 `--ai-shop {shoppath}` 时，写入 OpenClaw 的每个模型 provider `baseUrl` 都会统一写成
-  `https://unitag.dola.fi/aigateway/{shoppath}/v1` 这种格式；具体来源 provider 保留在
+  当前环境的 `.../aigateway/{shoppath}/v1` 格式；具体来源 provider 保留在
   `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
 - 普通模型目录只保留 `modelCategory = chat`；`image` 会进入独立的图片模型池，`video`、`chat-audio` 和其他非聊天分类不会进入普通模型列表
@@ -115,7 +119,7 @@ python3 scripts/agentctl.py create-instance \
 
 - `--local`
 - `--agent-zip`
-- `--model-env test|cn`
+- `--model-env global|test|cn`（默认 `global`）
 - `--ai-shop`
 - `--model`
 - `--image-quality low|medium|high|auto`（默认 `low`）

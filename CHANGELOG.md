@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 - 2026-08-22
+
+- 新增 `global` 模型环境，使用 `https://api.dola.io`；未传 `--model-env` 时默认使用 `global`，原有 `test`、`cn` 地址保持不变。
+
 ## 0.3.2 - 2026-08-18
 
 - 新增内置公共 Skill `nginx-delivery`，并将精简运行规则同步到创建及批量追加的全部 agent workspace；旧图片规则区块会自动迁移。

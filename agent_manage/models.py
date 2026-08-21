@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class CreateInstanceRequest:
     template_name: str = ""
     model_key: str = ""
-    model_env: str = "test"
+    model_env: str = "global"
     ai_shop: str | None = None
     model: str | None = None
     image_quality: str = "low"

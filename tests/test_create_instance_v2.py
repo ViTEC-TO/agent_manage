@@ -824,7 +824,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
             self.assertEqual(
                 saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-                "https://unitag.dola.fi/aigateway/v1",
+                "https://api.dola.io/aigateway/v1",
             )
             self.assertEqual(
                 saved_config["models"]["providers"]["unipay-fun"]["models"],
@@ -888,12 +888,12 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.fetch_models_mock.assert_called_once_with(
-            "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider/maomaoshuo"
+            "https://api.dola.io/aigateway/api/frontend/aimodels/byProvider/maomaoshuo"
         )
         self.assertEqual(result["ai_shop"], "maomaoshuo")
         self.assertEqual(
             saved_config["models"]["providers"]["unipay-fun"]["baseUrl"],
-            "https://unitag.dola.fi/aigateway/maomaoshuo/v1",
+            "https://api.dola.io/aigateway/maomaoshuo/v1",
         )
 
     def test_configure_models_overrides_provider_catalog_base_urls_with_shop_base_url(self):
@@ -951,14 +951,14 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(result["base_url"], "https://unitag.dola.fi/aigateway/aaa/v1")
+        self.assertEqual(result["base_url"], "https://api.dola.io/aigateway/aaa/v1")
         self.assertEqual(
             saved_config["models"]["providers"]["dolaio"]["baseUrl"],
-            "https://unitag.dola.fi/aigateway/aaa/v1",
+            "https://api.dola.io/aigateway/aaa/v1",
         )
         self.assertEqual(
             saved_config["models"]["providers"]["official"]["baseUrl"],
-            "https://unitag.dola.fi/aigateway/aaa/v1",
+            "https://api.dola.io/aigateway/aaa/v1",
         )
         self.assertIn("dolaio/gpt-5.4", saved_config["agents"]["defaults"]["models"])
 
@@ -1064,6 +1064,27 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "maomaoshuo",
             ),
             "https://api.dolaio.cn/aigateway/maomaoshuo/v1",
+        )
+
+    def test_model_gateway_addresses_and_global_default(self):
+        self.assertEqual(InstanceManagerV2.DEFAULT_MODEL_ENV, "global")
+        self.assertEqual(CreateInstanceRequest().model_env, "global")
+        self.assertEqual(
+            InstanceManagerV2.MODEL_GATEWAYS,
+            {
+                "global": {
+                    "base_url": "https://api.dola.io/aigateway/v1",
+                    "catalog_url": "https://api.dola.io/aigateway/api/frontend/aimodels/byProvider",
+                },
+                "test": {
+                    "base_url": "https://unitag.dola.fi/aigateway/v1",
+                    "catalog_url": "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",
+                },
+                "cn": {
+                    "base_url": "https://api.dolaio.cn/aigateway/v1",
+                    "catalog_url": "https://api.dolaio.cn/aigateway/api/frontend/aimodels/byProvider",
+                },
+            },
         )
 
     def test_create_instance_installs_multi_agent_template_members_from_agents_folder(self):

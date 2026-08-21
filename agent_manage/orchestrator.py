@@ -52,10 +52,14 @@ class InstanceManagerV2:
     IMAGE_GENERATION_POLICY_END = "<!-- agent_manage:image-generation-policy:end -->"
     RUNTIME_POLICY_START = "<!-- agent_manage:runtime-policy:start -->"
     RUNTIME_POLICY_END = "<!-- agent_manage:runtime-policy:end -->"
-    DEFAULT_MODEL_ENV = "test"
+    DEFAULT_MODEL_ENV = "global"
     LOCAL_TEMPLATE_ROOT = "~/.openclaw/templates"
     LOCAL_WORKSPACE_ROOT = "~/.openclaw/data"
     MODEL_GATEWAYS = {
+        "global": {
+            "base_url": "https://api.dola.io/aigateway/v1",
+            "catalog_url": "https://api.dola.io/aigateway/api/frontend/aimodels/byProvider",
+        },
         "test": {
             "base_url": "https://unitag.dola.fi/aigateway/v1",
             "catalog_url": "https://unitag.dola.fi/aigateway/api/frontend/aimodels/byProvider",

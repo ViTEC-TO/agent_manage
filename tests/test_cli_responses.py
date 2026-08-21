@@ -43,6 +43,8 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(payload["result"]["agent_name"], "base")
         self.assertIsNone(payload["error"])
         self.assertIn("serverTimeStamp", payload)
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(request.model_env, "global")
 
     def test_agent_manage_not_found_error_is_structured(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
