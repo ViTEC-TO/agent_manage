@@ -263,12 +263,14 @@ class ModelManagementMixin:
                 raise ValueError(f"Model provider config must be an object: {provider_key}")
             provider["apiKey"] = model_key
             provider["baseUrl"] = fallback_base_url
+            if provider_key == self.OPENAI_MODEL_PROVIDER:
+                provider["api"] = "openai-responses"
 
         image_provider = providers.setdefault(
             self.IMAGE_MODEL_PROVIDER,
             {
                 "baseUrl": fallback_base_url,
-                "api": "openai-completions",
+                "api": "openai-responses",
                 "models": [],
             },
         )
@@ -276,7 +278,7 @@ class ModelManagementMixin:
             raise ValueError("OpenAI image provider config must be an object")
         image_provider["baseUrl"] = image_base_url or fallback_base_url
         image_provider["apiKey"] = model_key
-        image_provider.setdefault("api", "openai-completions")
+        image_provider["api"] = "openai-responses"
         definitions = image_provider.setdefault("models", [])
         if not isinstance(definitions, list):
             raise ValueError("OpenAI image provider models must be a list")
