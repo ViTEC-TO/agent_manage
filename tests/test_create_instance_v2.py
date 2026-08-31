@@ -891,6 +891,18 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertIsInstance(result["total_elapsed_ms"], float)
             self.assertEqual(result["steps"][0]["step"], "request.prepare")
             self.assertTrue(all("elapsed_ms" in step for step in result["steps"]))
+            archive_step = next(
+                step for step in result["steps"] if step["step"] == "template.archive.inspect"
+            )
+            self.assertEqual(archive_step["result"]["archive_source"], "local")
+            self.assertEqual(archive_step["result"]["archive_bytes"], archive_path.stat().st_size)
+            self.assertIsNone(archive_step["result"]["future_network_download_elapsed_ms"])
+            prepare_step = next(
+                step for step in result["steps"] if step["step"] == "template.prepare"
+            )
+            self.assertIn("zip_extract_elapsed_ms", prepare_step["result"])
+            self.assertIn("template_copy_elapsed_ms", prepare_step["result"])
+            self.assertIn("template.manifest.parse", [step["step"] for step in result["steps"]])
             self.assertEqual(
                 next(step for step in result["steps"] if step["step"] == "agents.add")["result"]["command"],
                 f"openclaw agents add base --workspace {workspace.resolve()} --non-interactive --json --model openai/gpt-5",
@@ -1080,7 +1092,9 @@ class CreateInstanceV2Test(unittest.TestCase):
             [item["step"] for item in result["steps"]],
             [
                 "request.prepare",
+                "template.archive.inspect",
                 "template.prepare",
+                "template.manifest.parse",
                 "agents.add",
                 "workspace.populate",
                 "agents.resolve_additional",
@@ -1218,15 +1232,21 @@ class CreateInstanceV2Test(unittest.TestCase):
         )
         self.assertEqual(saved_config["tools"]["sessions"]["visibility"], "all")
         self.assertEqual(result["steps"][0]["step"], "request.prepare")
-        self.assertEqual(result["steps"][1]["step"], "template.prepare")
-        self.assertEqual(result["steps"][2]["step"], "agents.add")
-        self.assertEqual(result["steps"][3]["step"], "workspace.populate")
-        self.assertEqual(result["steps"][4]["step"], "agents.resolve_additional")
-        self.assertEqual(result["steps"][5]["step"], "agents.add[legal-contract-reader]")
-        self.assertEqual(result["steps"][6]["step"], "workspace.populate[legal-contract-reader]")
-        self.assertEqual(result["steps"][7]["step"], "agents.add[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][8]["step"], "workspace.populate[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][9]["step"], "models.fetch_catalog")
+        step_names = [step["step"] for step in result["steps"]]
+        for expected in [
+            "template.archive.inspect",
+            "template.prepare",
+            "template.manifest.parse",
+            "agents.resolve_additional",
+            "template.manifest.parse[legal-contract-reader]",
+            "agents.add[legal-contract-reader]",
+            "workspace.populate[legal-contract-reader]",
+            "template.manifest.parse[legal-risk-reviewer]",
+            "agents.add[legal-risk-reviewer]",
+            "workspace.populate[legal-risk-reviewer]",
+            "models.fetch_catalog",
+        ]:
+            self.assertIn(expected, step_names)
 
     def test_configure_models_can_write_cn_gateway_base_url(self):
         runner = FakeRunner()
@@ -1303,9 +1323,11 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
-            self.assertEqual(result["steps"][2]["step"], "libraries.ensure")
-            self.assertEqual(result["steps"][2]["result"]["libraries"][0]["action"], "continue")
-            self.assertEqual(result["steps"][3]["step"], "common_skills.install")
+            libraries_step = next(step for step in result["steps"] if step["step"] == "libraries.ensure")
+            self.assertEqual(libraries_step["result"]["libraries"][0]["action"], "continue")
+            self.assertIn("elapsed_ms", libraries_step["result"]["libraries"][0])
+            self.assertIn("verify_before_elapsed_ms", libraries_step["result"]["libraries"][0])
+            self.assertIn("common_skills.install", [step["step"] for step in result["steps"]])
             self.assertEqual(
                 (
                     config_path.parent
@@ -1419,7 +1441,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 (workspace / "skills" / "weather" / "SKILL.md").read_text(encoding="utf-8"),
                 "zip weather\n",
             )
-            self.assertIn("template.prepare", result["steps"][1]["step"])
+            self.assertIn("template.prepare", result["steps"][2]["step"])
             self.assertEqual(result["steps"][-1]["step"], "workspace.configure_image_generation")
             self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
 
@@ -1469,9 +1491,9 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["mode"], "reconciled")
             self.assertEqual(result["gateway_token"], "existing-gateway-token")
             self.assertTrue(result["gateway_token_preserved"])
-            self.assertEqual(result["steps"][2]["step"], "agents.add")
+            self.assertEqual(result["steps"][4]["step"], "agents.add")
             self.assertEqual(
-                result["steps"][2]["result"],
+                result["steps"][4]["result"],
                 {
                     "skipped": True,
                     "reason": "agent_exists",
@@ -1633,9 +1655,9 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertIsInstance(result["gateway_token"], str)
-            self.assertEqual(result["steps"][3]["step"], "workspace.populate")
+            self.assertEqual(result["steps"][5]["step"], "workspace.populate")
             self.assertEqual(
-                result["steps"][3]["result"],
+                result["steps"][5]["result"],
                 {
                     "skipped": True,
                     "reason": "workspace_not_empty",
@@ -2044,14 +2066,17 @@ class CreateInstanceV2Test(unittest.TestCase):
                     ],
                 ],
             )
-            self.assertEqual(result["steps"][0]["step"], "template.prepare[base]")
-            self.assertEqual(result["steps"][1]["step"], "agents.add[base]")
-            self.assertEqual(result["steps"][2]["step"], "workspace.populate[base]")
-            self.assertEqual(result["steps"][3]["step"], "template.prepare[demo]")
-            self.assertEqual(result["steps"][4]["step"], "agents.add[demo]")
-            self.assertEqual(result["steps"][5]["step"], "workspace.populate[demo]")
-            self.assertEqual(result["steps"][6]["step"], "config.configure_tools")
-            self.assertEqual(result["steps"][7]["step"], "workspace.configure_image_generation")
+            step_names = [step["step"] for step in result["steps"]]
+            for expected in [
+                "template.archive.inspect[base]", "template.prepare[base]",
+                "template.manifest.parse[base]", "agents.add[base]",
+                "workspace.populate[base]", "template.archive.inspect[demo]",
+                "template.prepare[demo]", "template.manifest.parse[demo]", "agents.add[demo]",
+            ]:
+                self.assertIn(expected, step_names)
+            self.assertIn("workspace.populate[demo]", step_names)
+            self.assertIn("config.configure_tools", step_names)
+            self.assertIn("workspace.configure_image_generation", step_names)
             for policy_path in [
                 tmp_path / "data" / "base" / "AGENTS.md",
                 tmp_path / "custom-demo" / "AGENTS.md",
@@ -2183,14 +2208,17 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "allow": ["main", "legal-team", "legal-contract-reader", "legal-risk-reviewer"],
             },
         )
-        self.assertEqual(result["steps"][0]["step"], "template.prepare[legal-team]")
-        self.assertEqual(result["steps"][1]["step"], "agents.add[legal-team]")
-        self.assertEqual(result["steps"][2]["step"], "workspace.populate[legal-team]")
-        self.assertEqual(result["steps"][3]["step"], "agents.add[legal-contract-reader]")
-        self.assertEqual(result["steps"][4]["step"], "workspace.populate[legal-contract-reader]")
-        self.assertEqual(result["steps"][5]["step"], "agents.add[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][6]["step"], "workspace.populate[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][7]["step"], "config.configure_tools")
+        step_names = [step["step"] for step in result["steps"]]
+        for expected in [
+            "template.archive.inspect[legal-team]", "template.prepare[legal-team]",
+            "template.manifest.parse[legal-team]", "agents.add[legal-team]",
+            "workspace.populate[legal-team]", "template.manifest.parse[legal-contract-reader]",
+            "agents.add[legal-contract-reader]", "workspace.populate[legal-contract-reader]",
+        ]:
+            self.assertIn(expected, step_names)
+        self.assertIn("agents.add[legal-risk-reviewer]", step_names)
+        self.assertIn("workspace.populate[legal-risk-reviewer]", step_names)
+        self.assertIn("config.configure_tools", step_names)
 
     def test_add_agents_skips_existing_agent_and_keeps_running(self):
         runner = FakeRunner()
@@ -2252,9 +2280,11 @@ class CreateInstanceV2Test(unittest.TestCase):
                     ]
                 ],
             )
-            self.assertEqual(result["steps"][0]["step"], "template.prepare[base]")
-            self.assertEqual(result["steps"][1]["step"], "agents.add[base]")
-            self.assertEqual(result["steps"][2]["step"], "workspace.populate[base]")
+            step_names = [step["step"] for step in result["steps"]]
+            self.assertIn("template.archive.inspect[base]", step_names)
+            self.assertIn("template.prepare[base]", step_names)
+            self.assertIn("agents.add[base]", step_names)
+            self.assertIn("workspace.populate[base]", step_names)
             self.assertIn("agent exists, skip add: base", runner.logs)
 
     def test_add_agents_appends_agent_to_existing_agent_to_agent_allow(self):
@@ -2392,12 +2422,23 @@ class CreateInstanceV2Test(unittest.TestCase):
                     ],
                 ],
             )
-            self.assertEqual(result["steps"][1]["step"], "libraries.ensure[demo]")
+            libraries_step = next(step for step in result["steps"] if step["step"] == "libraries.ensure[demo]")
             self.assertEqual(
-                result["steps"][1]["result"]["libraries"][0]["action"],
+                libraries_step["result"]["libraries"][0]["action"],
                 "installed",
             )
-            self.assertEqual(result["steps"][2]["step"], "common_skills.install[demo]")
+            self.assertIn(
+                "install_elapsed_ms",
+                libraries_step["result"]["libraries"][0],
+            )
+            self.assertIn(
+                "verify_after_elapsed_ms",
+                libraries_step["result"]["libraries"][0],
+            )
+            self.assertIn(
+                "common_skills.install[demo]",
+                [step["step"] for step in result["steps"]],
+            )
             self.assertEqual(
                 result["agents"][0]["result"]["libraries_ensure"]["libraries"][0]["installed_after"],
                 True,

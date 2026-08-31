@@ -6,6 +6,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List, Optional
 
 from .local import CommandError
@@ -64,6 +65,16 @@ class ProvisioningMixin:
     def _ensure_sources_ready(self, archive_path: Path) -> None:
         if not archive_path.is_file():
             raise FileNotFoundError(f"Template archive not found: {archive_path}")
+
+    def _inspect_template_archive(self, archive_path: Path) -> Dict[str, object]:
+        self._ensure_sources_ready(archive_path)
+        validate_template_archive(archive_path)
+        return {
+            "archive_path": str(archive_path),
+            "archive_source": "local",
+            "archive_bytes": archive_path.stat().st_size,
+            "future_network_download_elapsed_ms": None,
+        }
 
     def _workspace_has_content(self, workspace: Path) -> bool:
         if not workspace.exists():
@@ -131,6 +142,7 @@ class ProvisioningMixin:
         if template_dir.exists() and not template_dir.is_dir():
             raise NotADirectoryError(f"Template path is not a directory: {template_dir}")
 
+        extract_started_at = perf_counter()
         with tempfile.TemporaryDirectory() as tmpdir:
             extract_dir = Path(tmpdir)
             shutil.unpack_archive(str(archive_path), str(extract_dir))
@@ -144,6 +156,7 @@ class ProvisioningMixin:
             )
             backup_dir: Optional[Path] = None
             try:
+                copy_started_at = perf_counter()
                 copied = self._copy_directory_contents(source_root, staging_dir)
                 if template_dir.exists():
                     backup_dir = Path(
@@ -169,6 +182,8 @@ class ProvisioningMixin:
             "template_dir": str(template_dir),
             "archive_path": str(archive_path),
             "copied_into_template_dir": copied,
+            "zip_extract_elapsed_ms": round((copy_started_at - extract_started_at) * 1000, 1),
+            "template_copy_elapsed_ms": round((perf_counter() - copy_started_at) * 1000, 1),
         }
 
     def _populate_workspace(self, template_dir: Path, workspace: Path) -> Dict[str, object]:
@@ -205,6 +220,36 @@ class ProvisioningMixin:
         if not isinstance(payload, dict):
             raise ValueError(f"Template manifest must be a YAML object: {manifest_path}")
         return payload
+
+    def _load_template_manifest_for_timed_step(
+        self,
+        steps: List[Dict[str, object]],
+        template_dir: Path,
+        step_scope: Optional[str],
+    ) -> Dict[str, object]:
+        holder: Dict[str, Dict[str, object]] = {}
+
+        def load() -> Dict[str, object]:
+            manifest = self._load_template_manifest(template_dir)
+            holder["manifest"] = manifest
+            return {
+                "manifest_path": str(template_dir / "template.yaml"),
+                "manifest_exists": (template_dir / "template.yaml").is_file(),
+                "required_library_count": len(self._required_libraries_from_manifest(manifest)),
+                "common_skill_folder_count": len(
+                    self._common_skill_sources_from_manifest(template_dir, manifest)
+                ),
+                "declared_agent_count": len(
+                    manifest.get("agents", []) if isinstance(manifest.get("agents"), list) else []
+                ),
+            }
+
+        self._run_timed_step(
+            steps,
+            self._scoped_step_name("template.manifest.parse", step_scope),
+            load,
+        )
+        return holder["manifest"]
 
     def _parse_template_manifest_yaml_subset(self, text: str) -> Dict[str, object]:
         manifest: Dict[str, object] = {}
@@ -429,19 +474,23 @@ class ProvisioningMixin:
     ) -> Dict[str, object]:
         results = []
         for library in libraries:
+            library_started_at = perf_counter()
             name = str(library.get("name") or library.get("bin") or "").strip()
             if not name:
                 raise ValueError(f"requiredLibraries item missing name: {library}")
             required = library.get("required") is not False
+            verify_before_started_at = perf_counter()
             installed, check_result = self._library_is_installed(library)
             item_result: Dict[str, object] = {
                 "name": name,
                 "required": required,
                 "installed_before": installed,
                 "check": check_result,
+                "verify_before_elapsed_ms": self._elapsed_ms(verify_before_started_at),
             }
             if installed:
                 item_result["action"] = "continue"
+                item_result["elapsed_ms"] = self._elapsed_ms(library_started_at)
                 results.append(item_result)
                 continue
 
@@ -451,20 +500,26 @@ class ProvisioningMixin:
                     raise RuntimeError(f"Required library '{name}' is not installed and has no installCommand")
                 item_result["action"] = "skipped"
                 item_result["reason"] = "not_required_without_install_command"
+                item_result["elapsed_ms"] = self._elapsed_ms(library_started_at)
                 results.append(item_result)
                 continue
 
+            install_started_at = perf_counter()
             install_result = self.runner.run(
                 ["/bin/sh", "-lc", install_command],
                 timeout=self.LIBRARY_INSTALL_TIMEOUT_SECONDS,
             )
             item_result["action"] = "installed"
             item_result["install"] = self._command_result_payload(install_result)
+            item_result["install_elapsed_ms"] = self._elapsed_ms(install_started_at)
+            verify_after_started_at = perf_counter()
             installed_after, verify_after = self._library_is_installed(library)
             item_result["installed_after"] = installed_after
             item_result["verify_after"] = verify_after
+            item_result["verify_after_elapsed_ms"] = self._elapsed_ms(verify_after_started_at)
             if not installed_after:
                 raise RuntimeError(f"Required library '{name}' install completed but verification still failed")
+            item_result["elapsed_ms"] = self._elapsed_ms(library_started_at)
             results.append(item_result)
 
         return {
@@ -687,7 +742,6 @@ class ProvisioningMixin:
         rollback_on_fail: bool,
         step_scope: Optional[str],
     ) -> Dict[str, object]:
-        self._ensure_sources_ready(archive_path=archive_path)
         workspace_existed_before = workspace.exists()
         template_dir_existed_before = template_dir.exists()
         workspace_has_content = self._workspace_has_content(workspace)
@@ -698,6 +752,11 @@ class ProvisioningMixin:
         created_workspace = False
 
         try:
+            self._run_timed_step(
+                steps,
+                self._scoped_step_name("template.archive.inspect", step_scope),
+                lambda: self._inspect_template_archive(archive_path),
+            )
             started_template_prepare = True
             self._run_timed_step(
                 steps,
@@ -707,7 +766,9 @@ class ProvisioningMixin:
                     template_dir=template_dir,
                 ),
             )
-            manifest = self._load_template_manifest(template_dir)
+            manifest = self._load_template_manifest_for_timed_step(
+                steps, template_dir, step_scope
+            )
             required_libraries = self._required_libraries_from_manifest(manifest)
             if required_libraries:
                 self._run_timed_step(
@@ -843,7 +904,9 @@ class ProvisioningMixin:
         created_workspace = False
 
         try:
-            manifest = self._load_template_manifest(template_dir)
+            manifest = self._load_template_manifest_for_timed_step(
+                steps, template_dir, step_scope
+            )
             required_libraries = self._required_libraries_from_manifest(manifest)
             if required_libraries:
                 self._run_timed_step(
