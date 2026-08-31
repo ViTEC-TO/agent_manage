@@ -124,8 +124,43 @@ class ManagerCore:
         result = func()
         elapsed_ms = round((perf_counter() - started_at) * 1000, 1)
         self.runner.log(f"step: done {step} ({elapsed_ms} ms)")
-        steps.append(self._build_step_payload(step, result, elapsed_ms=elapsed_ms))
+        steps.append(
+            self._build_step_payload(
+                step,
+                self._step_result_for_response(step, result),
+                elapsed_ms=elapsed_ms,
+            )
+        )
         return result
+
+    def _step_result_for_response(self, step: str, result: object) -> object:
+        """Keep catalog data available internally without returning it in CLI steps."""
+        if step != "models.fetch_catalog" or not isinstance(result, dict):
+            return result
+
+        models_config = result.get("models_config")
+        providers = models_config.get("providers") if isinstance(models_config, dict) else None
+        provider_names = (
+            sorted(str(name) for name in providers)
+            if isinstance(providers, dict)
+            else sorted(
+                {
+                    str(model.get("provider"))
+                    for model in result.get("models", [])
+                    if isinstance(model, dict) and model.get("provider")
+                }
+            )
+        )
+        return {
+            "source_url": result.get("source_url"),
+            "model_count": result.get("model_count"),
+            "primary_model": result.get("primary_model"),
+            "official_image_model_available": bool(
+                result.get("official_image_model_available", False)
+            ),
+            "provider_names": provider_names,
+            "provider_count": len(provider_names),
+        }
 
     def _build_step_payload(
         self,

@@ -143,6 +143,36 @@ class ManagerCoreConfigTest(unittest.TestCase):
         self.assertTrue(result["gateway_token_preserved"])
         self.assertEqual(configured_tokens, ["container-gateway-token"])
 
+    def test_catalog_step_returns_summary_without_large_model_payload(self):
+        manager = ManagerCore(DummyRunner())
+        catalog = {
+            "source_url": "https://gateway.example/catalog",
+            "model_count": 2,
+            "primary_model": "provider-a/model-1",
+            "official_image_model_available": True,
+            "models": [{"provider": "provider-a", "definition": {"blob": "x" * 5_000_000}}],
+            "models_config": {
+                "providers": {
+                    "provider-a": {"models": [{"blob": "x" * 5_000_000}]},
+                    "provider-b": {"models": []},
+                }
+            },
+        }
+        steps = []
+
+        returned = manager._run_timed_step(
+            steps, "models.fetch_catalog", lambda: catalog
+        )
+
+        step_result = steps[0]["result"]
+        serialized = json.dumps(steps)
+        self.assertIs(returned, catalog)
+        self.assertEqual(step_result["provider_names"], ["provider-a", "provider-b"])
+        self.assertEqual(step_result["provider_count"], 2)
+        self.assertNotIn("models", step_result)
+        self.assertNotIn("models_config", step_result)
+        self.assertLess(len(serialized.encode("utf-8")), 8_192)
+
 
 if __name__ == "__main__":
     unittest.main()
