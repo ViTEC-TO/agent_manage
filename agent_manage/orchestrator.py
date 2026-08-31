@@ -135,8 +135,18 @@ class InstanceManagerV2(
                 ),
             )
 
-            gateway_token_preserved = existing_gateway_token is not None
-            if existing_gateway_token is not None:
+            container_gateway_token = self._container_gateway_token()
+            gateway_token_preserved = (
+                container_gateway_token is not None or existing_gateway_token is not None
+            )
+            if container_gateway_token is not None:
+                gateway_token = container_gateway_token
+                self._run_timed_step(
+                    steps,
+                    "config.configure_gateway_auth",
+                    lambda: self._configure_gateway_auth(gateway_token),
+                )
+            elif existing_gateway_token is not None:
                 gateway_token = existing_gateway_token
                 self._run_timed_step(
                     steps,

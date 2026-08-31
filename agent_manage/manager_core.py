@@ -53,6 +53,9 @@ class ManagerCore:
     IMAGE_QUALITY_CHOICES = IMAGE_QUALITY_CHOICES
     LOCAL_TEMPLATE_ROOT = "~/.openclaw/templates"
     LOCAL_WORKSPACE_ROOT = "~/.openclaw/data"
+    CONTAINER_OPENCLAW_ROOT = "/home/node/.openclaw"
+    CONTAINER_TEMPLATE_ROOT = f"{CONTAINER_OPENCLAW_ROOT}/templates"
+    CONTAINER_WORKSPACE_ROOT = f"{CONTAINER_OPENCLAW_ROOT}/data"
     MODEL_GATEWAYS = MODEL_GATEWAYS
     MODEL_CATALOG_URL = catalog_url_for_shop(
         MODEL_GATEWAYS[DEFAULT_MODEL_ENV]["catalog_url"],
@@ -90,6 +93,9 @@ class ManagerCore:
         self.container_runtime = os.environ.get("UNITAG_AGENT_MANAGER_RUNTIME") == "container"
         self.restart_required = False
         self.bin = runner.openclaw_bin
+        if self.container_runtime:
+            template_root = template_root or self.CONTAINER_TEMPLATE_ROOT
+            config_path = config_path or f"{self.CONTAINER_OPENCLAW_ROOT}/openclaw.json"
         self.template_root = (
             Path(template_root).expanduser().resolve()
             if template_root
@@ -179,6 +185,12 @@ class ManagerCore:
 
     def _generate_gateway_token(self) -> str:
         return secrets.token_urlsafe(32)
+
+    def _container_gateway_token(self) -> Optional[str]:
+        if not self.container_runtime:
+            return None
+        token = os.environ.get("OPENCLAW_GATEWAY_TOKEN")
+        return token.strip() if isinstance(token, str) and token.strip() else None
 
     def _snapshot_config_file(self) -> tuple[bytes, int] | None:
         if self.runner.dry_run or not self.config_path.exists():

@@ -148,6 +148,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         args = parser.parse_args(argv)
         _reject_container_path_overrides(raw_argv)
+        container_runtime = os.environ.get("UNITAG_AGENT_MANAGER_RUNTIME") == "container"
         client = InstanceManagerV2(
             LocalRunner(
                 openclaw_bin=args.openclaw_bin,
@@ -170,7 +171,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     model=args.model,
                     image_quality=args.image_quality,
                     workspace_root=args.workspace_root
-                    or ("~/.openclaw/data" if args.local else "~/data"),
+                    or (
+                        InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
+                        if container_runtime
+                        else ("~/.openclaw/data" if args.local else "~/data")
+                    ),
                     rollback_on_fail=not args.no_rollback,
                     agent_zip=args.agent_zip,
                     local=args.local,
@@ -182,7 +187,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = client.add_agents(
                 AddAgentsRequest(
                     agents=_parse_add_agents(args.agents),
-                    workspace_root=args.workspace_root,
+                    workspace_root=args.workspace_root
+                    or (
+                        InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
+                        if container_runtime
+                        else "~/data"
+                    ),
                 )
             )
             print_json(_success_response(result, client))

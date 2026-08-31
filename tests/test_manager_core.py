@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_manage.manager_core import ManagerCore
+from agent_manage.models import CreateInstanceRequest
 from agent_manage.orchestrator import InstanceManagerV2
 
 
@@ -68,6 +69,79 @@ class ManagerCoreConfigTest(unittest.TestCase):
 
         self.assertTrue(manager.restart_required)
         self.assertEqual(result["method"], "container_restart_required")
+
+    def test_container_runtime_uses_persistent_openclaw_paths_and_gateway_token(self):
+        runner = DummyRunner()
+        with patch.dict(
+            os.environ,
+            {
+                "UNITAG_AGENT_MANAGER_RUNTIME": "container",
+                "OPENCLAW_GATEWAY_TOKEN": "container-gateway-token",
+            },
+            clear=False,
+        ):
+            manager = ManagerCore(runner)
+            self.assertTrue(
+                str(manager.template_root)
+                .replace("\\", "/")
+                .endswith("/home/node/.openclaw/templates")
+            )
+            self.assertTrue(
+                str(manager.config_path)
+                .replace("\\", "/")
+                .endswith("/home/node/.openclaw/openclaw.json")
+            )
+            self.assertEqual(manager._container_gateway_token(), "container-gateway-token")
+
+    def test_container_create_instance_writes_environment_gateway_token(self):
+        runner = DummyRunner()
+        with patch.dict(
+            os.environ,
+            {
+                "UNITAG_AGENT_MANAGER_RUNTIME": "container",
+                "OPENCLAW_GATEWAY_TOKEN": "container-gateway-token",
+            },
+            clear=False,
+        ):
+            manager = InstanceManagerV2(runner)
+            configured_tokens = []
+            with (
+                patch.object(manager, "resolve_agent_name", return_value="base"),
+                patch.object(manager, "resolve_archive_path", return_value=Path("/tmp/base.zip")),
+                patch.object(manager, "resolve_template_dir", return_value=Path("/tmp/template/base")),
+                patch.object(
+                    manager,
+                    "_provision_agent_from_template",
+                    return_value={
+                        "created_agent": True,
+                        "created_template_dir": False,
+                        "created_workspace": False,
+                    },
+                ),
+                patch.object(manager, "_load_template_manifest", return_value={}),
+                patch.object(manager, "_multi_agent_specs_from_template", return_value=[]),
+                patch.object(
+                    manager,
+                    "_fetch_supported_gateway_models",
+                    return_value={"models": [], "official_image_model_available": False},
+                ),
+                patch.object(manager, "_configure_config_models"),
+                patch.object(
+                    manager,
+                    "_configure_gateway_auth",
+                    side_effect=lambda token: configured_tokens.append(token) or {},
+                ),
+                patch.object(manager, "_configure_config_tools"),
+                patch.object(manager, "_configure_workspace_defaults"),
+                patch.object(manager, "_generate_gateway_token", side_effect=AssertionError),
+            ):
+                result = manager.create_instance(
+                    CreateInstanceRequest(template_name="base", model_key="model-key")
+                )
+
+        self.assertEqual(result["gateway_token"], "container-gateway-token")
+        self.assertTrue(result["gateway_token_preserved"])
+        self.assertEqual(configured_tokens, ["container-gateway-token"])
 
 
 if __name__ == "__main__":

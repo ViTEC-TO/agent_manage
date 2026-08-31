@@ -369,6 +369,20 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(request.model_key, "model-secret")
         self.assertFalse(json.loads(stdout.getvalue())["restartRequired"])
 
+    def test_container_mode_uses_persistent_workspace_root_for_create_instance(self):
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+                manager_cls.CONTAINER_WORKSPACE_ROOT = "/home/node/.openclaw/data"
+                manager_cls.return_value.create_instance.return_value = {"ok": True}
+                manager_cls.return_value.restart_required = False
+                with redirect_stdout(io.StringIO()):
+                    agent_manage_main(
+                        ["create-instance", "--template-name", "base", "--model-key", "key"]
+                    )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(request.workspace_root, "/home/node/.openclaw/data")
+
     def test_container_mode_reads_tg_and_weixin_tokens_from_stdin(self):
         for command, arguments, method, attribute in (
             ("add-tg-bot", ["--agent", "main", "--tg-token-stdin"], "add_tg_bot", "bot_token"),
