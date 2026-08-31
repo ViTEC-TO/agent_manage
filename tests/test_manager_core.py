@@ -20,6 +20,136 @@ class DummyRunner:
 
 
 class ManagerCoreConfigTest(unittest.TestCase):
+    def _write_config(self, path: Path, config: dict) -> None:
+        path.write_text(json.dumps(config), encoding="utf-8")
+
+    def test_container_gateway_auth_without_control_ui_origin_leaves_allowed_origins_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "UNITAG_AGENT_MANAGER_RUNTIME": "container",
+                "UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN": "",
+            },
+        ):
+            config_path = Path(tmpdir) / "openclaw.json"
+            original = {
+                "gateway": {
+                    "auth": {"mode": "none"},
+                    "controlUi": {"allowedOrigins": ["https://existing.example"], "theme": "dark"},
+                }
+            }
+            self._write_config(config_path, original)
+            result = InstanceManagerV2(DummyRunner(), config_path=str(config_path))._configure_gateway_auth("gateway-token")
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["gateway"]["controlUi"], original["gateway"]["controlUi"])
+            self.assertNotIn("control_ui_allowed_origins", result)
+            self.assertNotIn("gateway_token", result)
+
+    def test_container_gateway_auth_merges_and_deduplicates_control_ui_origin(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "UNITAG_AGENT_MANAGER_RUNTIME": "container",
+                "UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN": "https://new.example/",
+            },
+        ):
+            config_path = Path(tmpdir) / "openclaw.json"
+            self._write_config(
+                config_path,
+                {
+                    "gateway": {
+                        "auth": {"mode": "none"},
+                        "controlUi": {
+                            "allowedOrigins": [
+                                "https://existing.example",
+                                "https://existing.example/",
+                                123,
+                                "not an origin",
+                            ],
+                            "theme": "dark",
+                            "custom": {"keep": True},
+                        },
+                        "otherGatewayField": "preserved",
+                    }
+                },
+            )
+            result = InstanceManagerV2(DummyRunner(), config_path=str(config_path))._configure_gateway_auth("gateway-token")
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved["gateway"]["controlUi"]["allowedOrigins"],
+                ["https://existing.example", "https://new.example"],
+            )
+            self.assertEqual(saved["gateway"]["controlUi"]["theme"], "dark")
+            self.assertEqual(saved["gateway"]["controlUi"]["custom"], {"keep": True})
+            self.assertEqual(saved["gateway"]["otherGatewayField"], "preserved")
+            self.assertEqual(result["control_ui_allowed_origins"], ["https://existing.example", "https://new.example"])
+            self.assertNotIn("gateway_token", result)
+
+    def test_invalid_container_control_ui_origin_fails_before_config_write(self):
+        invalid_origins = [
+            "ftp://control.example",
+            "https://user:pass@control.example",
+            "https://control.example/path",
+            "https://control.example?query=true",
+            "https://control.example#fragment",
+        ]
+        for origin in invalid_origins:
+            with self.subTest(origin=origin), tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+                os.environ,
+                {
+                    "UNITAG_AGENT_MANAGER_RUNTIME": "container",
+                    "UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN": origin,
+                },
+            ):
+                config_path = Path(tmpdir) / "openclaw.json"
+                original = '{"gateway":{"controlUi":{"theme":"dark"}}}\n'
+                config_path.write_text(original, encoding="utf-8")
+                manager = InstanceManagerV2(DummyRunner(), config_path=str(config_path))
+
+                with self.assertRaisesRegex(ValueError, "CONTROL_UI_ORIGIN"):
+                    manager._configure_gateway_auth("gateway-token")
+
+                self.assertEqual(config_path.read_text(encoding="utf-8"), original)
+
+    def test_container_gateway_auth_dry_run_reports_control_ui_origin_without_writing_config(self):
+        class DryRunRunner(DummyRunner):
+            dry_run = True
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "UNITAG_AGENT_MANAGER_RUNTIME": "container",
+                "UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN": "https://control.example",
+            },
+        ):
+            config_path = Path(tmpdir) / "openclaw.json"
+            original = '{"gateway":{"controlUi":{"allowedOrigins":["https://existing.example"]}}}\n'
+            config_path.write_text(original, encoding="utf-8")
+            result = InstanceManagerV2(DryRunRunner(), config_path=str(config_path))._configure_gateway_auth("gateway-token")
+
+            self.assertTrue(result["skipped"])
+            self.assertEqual(result["control_ui_allowed_origins"], ["https://control.example"])
+            self.assertNotIn("gateway_token", result)
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original)
+
+    def test_vps_gateway_auth_ignores_control_ui_origin_environment_variable(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "UNITAG_AGENT_MANAGER_RUNTIME": "vps",
+                "UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN": "not-an-origin",
+            },
+        ):
+            config_path = Path(tmpdir) / "openclaw.json"
+            self._write_config(config_path, {"gateway": {"controlUi": {"theme": "dark"}}})
+            result = InstanceManagerV2(DummyRunner(), config_path=str(config_path))._configure_gateway_auth("gateway-token")
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["gateway"]["controlUi"], {"theme": "dark"})
+            self.assertNotIn("control_ui_allowed_origins", result)
+
     def test_config_write_is_atomic_private_and_cleans_failed_temp_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "openclaw.json"

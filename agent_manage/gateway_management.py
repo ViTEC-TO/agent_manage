@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
 from time import perf_counter, sleep
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from .local import CommandError
 
@@ -101,13 +103,16 @@ class GatewayManagementMixin:
 
     def _configure_gateway_auth(self, gateway_token: str) -> Dict[str, object]:
         config_path = self.config_path
+        control_ui_origin = self._container_control_ui_origin()
         if self.runner.dry_run:
-            return {
+            result: Dict[str, object] = {
                 "skipped": True,
                 "config_path": str(config_path),
                 "gateway_auth_mode": "token",
-                "gateway_token": gateway_token,
             }
+            if control_ui_origin is not None:
+                result["control_ui_allowed_origins"] = [control_ui_origin]
+            return result
 
         config = self._load_config()
         if not isinstance(config, dict):
@@ -118,22 +123,89 @@ class GatewayManagementMixin:
         auth["mode"] = "token"
         auth["token"] = gateway_token
 
+        control_ui_allowed_origins = None
+        if control_ui_origin is not None:
+            control_ui = gateway.setdefault("controlUi", {})
+            if not isinstance(control_ui, dict):
+                raise ValueError("gateway.controlUi must be a JSON object")
+            control_ui_allowed_origins = self._merge_control_ui_allowed_origins(
+                control_ui.get("allowedOrigins"),
+                control_ui_origin,
+            )
+            control_ui["allowedOrigins"] = control_ui_allowed_origins
+
+        changed_paths = [
+            "gateway.auth.mode",
+            "gateway.auth.token",
+        ]
+        if control_ui_allowed_origins is not None:
+            changed_paths.append("gateway.controlUi.allowedOrigins")
         self._write_config(
             config,
             note="configure gateway auth for create_instance",
-            changed_paths=[
-                "gateway.auth.mode",
-                "gateway.auth.token",
-            ],
+            changed_paths=changed_paths,
             extra={
                 "gateway_auth_mode": "token",
             },
         )
-        return {
+        result = {
             "config_path": str(config_path),
             "gateway_auth_mode": "token",
-            "gateway_token": gateway_token,
         }
+        if control_ui_allowed_origins is not None:
+            result["control_ui_allowed_origins"] = control_ui_allowed_origins
+        return result
+
+    def _container_control_ui_origin(self) -> Optional[str]:
+        if not self.container_runtime:
+            return None
+        value = os.environ.get("UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN")
+        if value is None or not value.strip():
+            return None
+        return self._normalize_control_ui_origin(value)
+
+    @staticmethod
+    def _normalize_control_ui_origin(value: object) -> str:
+        if not isinstance(value, str) or value != value.strip() or not value:
+            raise ValueError("UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN must be an absolute http/https origin")
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError(
+                "UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN must be an absolute http/https origin"
+            ) from exc
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.netloc
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or port is not None and not 0 < port < 65536
+        ):
+            raise ValueError("UNITAG_AGENT_MANAGER_CONTROL_UI_ORIGIN must be an absolute http/https origin")
+        return urlunsplit((parsed.scheme.lower(), parsed.netloc, "", "", ""))
+
+    def _merge_control_ui_allowed_origins(
+        self,
+        existing: object,
+        additional_origin: str,
+    ) -> List[str]:
+        merged: List[str] = []
+        values = existing if isinstance(existing, list) else []
+        for item in values:
+            try:
+                origin = self._normalize_control_ui_origin(item)
+            except ValueError:
+                continue
+            if origin not in merged:
+                merged.append(origin)
+        if additional_origin not in merged:
+            merged.append(additional_origin)
+        return merged
 
     def _preserve_gateway_auth(self) -> Dict[str, object]:
         config_path = self.config_path
