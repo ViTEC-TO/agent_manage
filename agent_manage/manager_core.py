@@ -87,6 +87,8 @@ class ManagerCore:
         config_path: Optional[str] = None,
     ) -> None:
         self.runner = runner
+        self.container_runtime = os.environ.get("UNITAG_AGENT_MANAGER_RUNTIME") == "container"
+        self.restart_required = False
         self.bin = runner.openclaw_bin
         self.template_root = (
             Path(template_root).expanduser().resolve()

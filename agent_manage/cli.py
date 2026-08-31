@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import List, Optional
 
@@ -20,10 +21,12 @@ from .models import (
 )
 from .orchestrator import InstanceManagerV2
 from .response import (
+    CliArgumentError,
     JsonArgumentParser,
     build_error_response,
     build_success_response,
     print_json,
+    redact_sensitive_values,
 )
 
 MODEL_ENV_CHOICES = sorted(InstanceManagerV2.MODEL_GATEWAYS.keys())
@@ -34,6 +37,7 @@ IMAGE_QUALITY_CHOICES = InstanceManagerV2.IMAGE_QUALITY_CHOICES
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = JsonArgumentParser(prog="agent-manage")
     parser.add_argument("--openclaw-bin", default="openclaw")
     parser.add_argument("--project-dir")
@@ -47,7 +51,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     create_instance.add_argument("--template-name")
     create_instance.add_argument("--agent-zip")
     create_instance.add_argument("--local", action="store_true")
-    create_instance.add_argument("--model-key", required=True)
+    create_instance_model_key = create_instance.add_mutually_exclusive_group(required=True)
+    create_instance_model_key.add_argument("--model-key")
+    create_instance_model_key.add_argument("--model-key-stdin", action="store_true")
     create_instance.add_argument(
         "--model-env",
         choices=MODEL_ENV_CHOICES,
@@ -73,7 +79,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
-    add_tg_bot.add_argument("--tg-token", required=True)
+    add_tg_bot_token = add_tg_bot.add_mutually_exclusive_group(required=True)
+    add_tg_bot_token.add_argument("--tg-token")
+    add_tg_bot_token.add_argument("--tg-token-stdin", action="store_true")
     add_tg_bot.add_argument("--bot-name")
 
     add_feishu_bot = subparsers.add_parser("add-feishu-bot")
@@ -97,7 +105,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_weixin_bot = subparsers.add_parser("add-weixin-bot")
     add_weixin_bot.add_argument("--agent", required=True)
     add_weixin_bot.add_argument("--ilink-bot-id", required=True)
-    add_weixin_bot.add_argument("--bot-token", required=True)
+    add_weixin_bot_token = add_weixin_bot.add_mutually_exclusive_group(required=True)
+    add_weixin_bot_token.add_argument("--bot-token")
+    add_weixin_bot_token.add_argument("--bot-token-stdin", action="store_true")
     add_weixin_bot.add_argument("--baseurl")
     add_weixin_bot.add_argument("--ilink-user-id")
     add_weixin_bot.add_argument("--bot-name")
@@ -134,8 +144,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     subparsers.add_parser("current-gateway-token")
 
+    sensitive_values: List[str] = []
     try:
         args = parser.parse_args(argv)
+        _reject_container_path_overrides(raw_argv)
         client = InstanceManagerV2(
             LocalRunner(
                 openclaw_bin=args.openclaw_bin,
@@ -150,7 +162,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = client.create_instance(
                 CreateInstanceRequest(
                     template_name=args.template_name,
-                    model_key=args.model_key,
+                    model_key=_secret_argument(
+                        args.model_key, args.model_key_stdin, sensitive_values
+                    ),
                     model_env=args.model_env,
                     ai_shop=args.ai_shop,
                     model=args.model,
@@ -162,7 +176,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     local=args.local,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "add-agents":
             result = client.add_agents(
@@ -171,17 +185,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                     workspace_root=args.workspace_root,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "add-tg-bot":
             result = client.add_tg_bot(
                 AddTelegramBotRequest(
                     agent_name=args.agent,
-                    bot_token=args.tg_token,
+                    bot_token=_secret_argument(
+                        args.tg_token, args.tg_token_stdin, sensitive_values
+                    ),
                     bot_name=args.bot_name,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "add-feishu-bot":
             result = client.add_feishu_bot(
@@ -190,9 +206,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     domain=args.domain,
                     account_id=args.account_id,
                     app_id=args.app_id,
-                    app_secret=_read_secret_from_stdin()
-                    if args.app_secret_stdin
-                    else args.app_secret,
+                    app_secret=_secret_argument(
+                        args.app_secret, args.app_secret_stdin, sensitive_values
+                    ),
                     bot_name=args.bot_name,
                     dm_policy=args.dm_policy,
                     allow_from=args.allow_from,
@@ -200,14 +216,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                     lark_cli_identity=args.lark_cli_identity,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "add-weixin-bot":
             result = client.add_weixin_bot(
                 AddWeixinBotRequest(
                     agent_name=args.agent,
                     ilink_bot_id=args.ilink_bot_id,
-                    bot_token=args.bot_token,
+                    bot_token=_secret_argument(
+                        args.bot_token, args.bot_token_stdin, sensitive_values
+                    ),
                     baseurl=args.baseurl,
                     ilink_user_id=args.ilink_user_id,
                     bot_name=args.bot_name,
@@ -215,23 +233,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                     cdn_base_url=args.cdn_base_url,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "check-server-status":
             result = client.check_server_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "tg-bot-status":
             result = client.get_tg_bot_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "feishu-bot-status":
             result = client.get_feishu_bot_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "weixin-bot-status":
             result = client.get_weixin_bot_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "delete-tg-bot":
             result = client.delete_tg_bot(
@@ -239,7 +257,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     bot_name=args.bot_name,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "delete-feishu-bot":
             result = client.delete_feishu_bot(
@@ -247,7 +265,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     account_id=args.account_id,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "delete-weixin-bot":
             result = client.delete_weixin_bot(
@@ -255,11 +273,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     ilink_bot_id=args.ilink_bot_id,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "agents-list":
             result = client.list_agents()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "set-model":
             result = client.set_model(
@@ -267,23 +285,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                     model_ref=args.model,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "current-model":
             result = client.get_current_model()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "models":
             result = client.get_supported_models()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "update-model":
             result = client.update_model_catalog()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "current-gateway-token":
             result = client.get_current_gateway_token()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
 
         parser.print_help(sys.stderr)
@@ -291,7 +309,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except SystemExit:
         raise
     except Exception as exc:
-        print_json(build_error_response(exc))
+        print_json(redact_sensitive_values(build_error_response(exc), sensitive_values))
         return 1
 
 
@@ -344,7 +362,41 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
 
 
 def _read_secret_from_stdin() -> str:
-    return sys.stdin.read().strip()
+    value = sys.stdin.read()
+    if value.endswith("\r\n"):
+        return value[:-2]
+    if value.endswith("\r") or value.endswith("\n"):
+        return value[:-1]
+    return value
+
+
+def _secret_argument(
+    plaintext: Optional[str], from_stdin: bool, sensitive_values: List[str]
+) -> str:
+    value = _read_secret_from_stdin() if from_stdin else (plaintext or "")
+    if value:
+        sensitive_values.append(value)
+        return value
+    raise ValueError("Secret value must not be empty")
+
+
+def _success_response(result: object, client: InstanceManagerV2) -> dict:
+    result_restart_required = (
+        isinstance(result, dict) and bool(result.get("restart_required", False))
+    )
+    return build_success_response(
+        result,
+        restart_required=bool(client.restart_required or result_restart_required),
+    )
+
+
+def _reject_container_path_overrides(argv: List[str]) -> None:
+    if os.environ.get("UNITAG_AGENT_MANAGER_RUNTIME") != "container":
+        return
+    forbidden = ("--openclaw-bin", "--project-dir", "--template-root", "--config-path")
+    for option in forbidden:
+        if option in argv or any(argument.startswith(f"{option}=") for argument in argv):
+            raise CliArgumentError(f"{option} is not allowed in container runtime")
 
 
 if __name__ == "__main__":

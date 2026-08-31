@@ -166,6 +166,14 @@ class GatewayManagementMixin:
         return None
 
     def _restart_gateway_service(self) -> Dict[str, object]:
+        if self.container_runtime:
+            self.restart_required = True
+            return {
+                "deferred": True,
+                "method": "container_restart_required",
+                "service": self.GATEWAY_SERVICE_NAME,
+            }
+
         if self.runner.dry_run:
             return {
                 "skipped": True,

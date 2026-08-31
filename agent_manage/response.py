@@ -31,6 +31,7 @@ def build_success_response(
     *,
     message: str = "OK",
     type_code: int = TYPE_CODE_SUCCESS,
+    restart_required: bool = False,
 ) -> Dict[str, object]:
     return {
         "result": result,
@@ -38,6 +39,7 @@ def build_success_response(
         "typeCode": type_code,
         "message": message,
         "serverTimeStamp": _server_timestamp(),
+        "restartRequired": restart_required,
     }
 
 
@@ -81,7 +83,22 @@ def build_error_response(exc: Exception) -> Dict[str, object]:
         "typeCode": type_code,
         "message": message,
         "serverTimeStamp": _server_timestamp(),
+        "restartRequired": False,
     }
+
+
+def redact_sensitive_values(value: object, secrets: list[str]) -> object:
+    """Remove command-supplied secrets from error output without changing success data."""
+    values = [secret for secret in secrets if secret]
+    if isinstance(value, str):
+        for secret in values:
+            value = value.replace(secret, "[REDACTED]")
+        return value
+    if isinstance(value, list):
+        return [redact_sensitive_values(item, values) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_sensitive_values(item, values) for key, item in value.items()}
+    return value
 
 
 def print_json(value: object) -> None:

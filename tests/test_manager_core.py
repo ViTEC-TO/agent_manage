@@ -1,10 +1,13 @@
 import json
+import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_manage.manager_core import ManagerCore
+from agent_manage.orchestrator import InstanceManagerV2
 
 
 class DummyRunner:
@@ -56,6 +59,15 @@ class ManagerCoreConfigTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "must be a JSON object"):
                 manager._load_config()
+
+    def test_container_runtime_defers_gateway_restart_without_systemctl(self):
+        runner = DummyRunner()
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            manager = InstanceManagerV2(runner)
+            result = manager._restart_gateway_service()
+
+        self.assertTrue(manager.restart_required)
+        self.assertEqual(result["method"], "container_restart_required")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -351,6 +352,72 @@ class CliResponseTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["result"]["account_id"], "b0f5860fdecb-im-bot")
+
+    def test_container_mode_reads_model_key_from_stdin_and_strips_one_newline(self):
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+                manager_cls.return_value.create_instance.return_value = {"ok": True}
+                manager_cls.return_value.restart_required = False
+                stdout = io.StringIO()
+                with patch("sys.stdin", io.StringIO("model-secret\r\n")), redirect_stdout(stdout):
+                    exit_code = agent_manage_main(
+                        ["create-instance", "--template-name", "base", "--model-key-stdin"]
+                    )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request.model_key, "model-secret")
+        self.assertFalse(json.loads(stdout.getvalue())["restartRequired"])
+
+    def test_container_mode_reads_tg_and_weixin_tokens_from_stdin(self):
+        for command, arguments, method, attribute in (
+            ("add-tg-bot", ["--agent", "main", "--tg-token-stdin"], "add_tg_bot", "bot_token"),
+            (
+                "add-weixin-bot",
+                ["--agent", "main", "--ilink-bot-id", "bot@im.bot", "--bot-token-stdin"],
+                "add_weixin_bot",
+                "bot_token",
+            ),
+        ):
+            with self.subTest(command=command), patch.dict(
+                os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}
+            ):
+                with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+                    getattr(manager_cls.return_value, method).return_value = {"ok": True}
+                    manager_cls.return_value.restart_required = False
+                    with patch("sys.stdin", io.StringIO("token\n")), redirect_stdout(io.StringIO()):
+                        exit_code = agent_manage_main([command, *arguments])
+
+            self.assertEqual(exit_code, 0)
+            request = getattr(manager_cls.return_value, method).call_args.args[0]
+            self.assertEqual(getattr(request, attribute), "token")
+
+    def test_container_mode_rejects_global_path_overrides(self):
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    ["--config-path", "/tmp/unsafe.json", "current-model"]
+                )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["typeCode"], TYPE_CODE_INVALID_ARGUMENT)
+        self.assertNotIn("unsafe.json", payload["message"])
+
+    def test_secret_is_redacted_from_error_output(self):
+        secret = "never-print-this-secret"
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_tg_bot.side_effect = ValueError(f"failed: {secret}")
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    ["add-tg-bot", "--agent", "main", "--tg-token", secret]
+                )
+
+        self.assertEqual(exit_code, 1)
+        self.assertNotIn(secret, stdout.getvalue())
+        self.assertIn("[REDACTED]", stdout.getvalue())
 
     def test_agent_manage_delete_weixin_bot_dispatches_correctly(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:

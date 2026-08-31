@@ -1,5 +1,36 @@
 # Agent Manage
 
+## Container runtime (Execute v1)
+
+When DockerManager executes AgentManager inside a managed Container, it sets
+`UNITAG_AGENT_MANAGER_RUNTIME=container`. Existing commands and VPS behavior
+are unchanged. In this mode AgentManager never invokes `systemctl --user`; a
+successful operation that changes Gateway configuration returns the additive
+top-level JSON field `restartRequired: true`. DockerManager owns the subsequent
+Container restart and readiness check.
+
+DockerManager should pass each sensitive value as the single stdin payload and
+use the corresponding switch. Plaintext switches remain supported for existing
+direct/VPS callers, but cannot be combined with their stdin variants.
+
+```bash
+printf '%s' "$MODEL_KEY" | python3 scripts/agentctl.py create-instance \
+  --template-name unipay-claw-base --model-key-stdin
+
+printf '%s' "$TG_TOKEN" | python3 scripts/agentctl.py add-tg-bot \
+  --agent main --tg-token-stdin
+
+printf '%s' "$WEIXIN_TOKEN" | python3 scripts/agentctl.py add-weixin-bot \
+  --agent main --ilink-bot-id bot-001 --bot-token-stdin
+
+printf '%s' "$APP_SECRET" | python3 scripts/agentctl.py add-feishu-bot \
+  --agent main --app-id cli_xxx --app-secret-stdin
+```
+
+In Container runtime, `--openclaw-bin`, `--project-dir`, `--template-root`, and
+`--config-path` are rejected. The image and Container environment supply those
+paths, so a command cannot redirect AgentManager outside the managed instance.
+
 入口：
 
 ```bash
