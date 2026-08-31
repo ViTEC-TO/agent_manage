@@ -2,7 +2,7 @@ import io
 import json
 import os
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from agent_manage import __version__
@@ -23,18 +23,47 @@ class CliResponseTest(unittest.TestCase):
     def test_oversized_final_json_returns_small_redacted_error_envelope(self):
         secret = "never-leak-this-secret"
         stdout = io.StringIO()
+        stderr = io.StringIO()
         oversized = build_success_response({"payload": secret + ("x" * MAX_PROTOCOL_RESPONSE_BYTES)})
+        original_utf8_bytes = len(json.dumps(oversized, indent=2, ensure_ascii=False).encode("utf-8"))
 
-        with redirect_stdout(stdout):
+        with redirect_stdout(stdout), redirect_stderr(stderr):
             print_json(oversized)
 
         output = stdout.getvalue()
+        diagnostics = stderr.getvalue()
         payload = json.loads(output)
         self.assertLess(len(output.encode("utf-8")), 8_192)
         self.assertEqual(payload["typeCode"], TYPE_CODE_OUTPUT_TOO_LARGE)
         self.assertEqual(payload["error"]["code"], "RESPONSE_OUTPUT_TOO_LARGE")
-        self.assertGreater(payload["error"]["details"]["totalUtf8Bytes"], MAX_PROTOCOL_RESPONSE_BYTES)
+        self.assertEqual(payload["error"]["details"]["totalUtf8Bytes"], original_utf8_bytes)
         self.assertNotIn(secret, output)
+        self.assertNotIn(secret, diagnostics)
+        self.assertEqual(
+            diagnostics,
+            "[agentctl response] "
+            f"original_utf8_bytes={original_utf8_bytes} "
+            f"emitted_utf8_bytes={len(output.rstrip(chr(10)).encode('utf-8'))} "
+            "budget_applied=true\n",
+        )
+
+    def test_small_final_json_reports_exact_emitted_byte_count(self):
+        response = build_success_response({"message": "猫"})
+        expected_utf8_bytes = len(json.dumps(response, indent=2, ensure_ascii=False).encode("utf-8"))
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            print_json(response)
+
+        self.assertEqual(json.loads(stdout.getvalue()), response)
+        self.assertEqual(
+            stderr.getvalue(),
+            "[agentctl response] "
+            f"original_utf8_bytes={expected_utf8_bytes} "
+            f"emitted_utf8_bytes={expected_utf8_bytes} "
+            "budget_applied=false\n",
+        )
 
     def test_agent_manage_version_uses_package_version(self):
         stdout = io.StringIO()

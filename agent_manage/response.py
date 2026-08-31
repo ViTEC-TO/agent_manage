@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from typing import Any, Dict
 
@@ -105,14 +106,15 @@ def redact_sensitive_values(value: object, secrets: list[str]) -> object:
 
 def print_json(value: object) -> None:
     serialized = json.dumps(value, indent=2, ensure_ascii=False)
-    encoded = serialized.encode("utf-8")
-    if len(encoded) > MAX_PROTOCOL_RESPONSE_BYTES:
+    original_utf8_bytes = len(serialized.encode("utf-8"))
+    budget_applied = original_utf8_bytes > MAX_PROTOCOL_RESPONSE_BYTES
+    if budget_applied:
         serialized = json.dumps(
             {
                 "result": None,
                 "error": {
                     "code": "RESPONSE_OUTPUT_TOO_LARGE",
-                    "details": {"totalUtf8Bytes": len(encoded)},
+                    "details": {"totalUtf8Bytes": original_utf8_bytes},
                 },
                 "typeCode": TYPE_CODE_OUTPUT_TOO_LARGE,
                 "message": "AgentManager response exceeds the 512 KiB output budget",
@@ -122,6 +124,14 @@ def print_json(value: object) -> None:
             indent=2,
             ensure_ascii=False,
         )
+    emitted_utf8_bytes = len(serialized.encode("utf-8"))
+    print(
+        "[agentctl response] "
+        f"original_utf8_bytes={original_utf8_bytes} "
+        f"emitted_utf8_bytes={emitted_utf8_bytes} "
+        f"budget_applied={str(budget_applied).lower()}",
+        file=sys.stderr,
+    )
     print(serialized)
 
 
