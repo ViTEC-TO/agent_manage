@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List
 
 from .channel_management import ChannelManagementMixin
@@ -25,8 +26,21 @@ class InstanceManagerV2(
     """Coordinate instance creation across the domain-specific manager mixins."""
 
     def create_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
+        execution_started_at = perf_counter()
+        steps: List[Dict[str, object]] = []
         if request.local:
-            return self._create_local_instance(request)
+            return self._create_local_instance(request, execution_started_at, steps)
+
+        try:
+            self._run_timed_step(
+                steps,
+                "request.prepare",
+                lambda: self._create_instance_preparation_result(request, local=False),
+            )
+        except Exception as exc:
+            raise self._create_instance_failure(
+                exc, steps, [], execution_started_at
+            ) from exc
 
         if not request.template_name.strip():
             raise ValueError("template_name is required")
@@ -36,7 +50,6 @@ class InstanceManagerV2(
         ai_shop = normalize_shop(request.ai_shop)
         image_quality = normalize_image_quality(request.image_quality)
         model_key = request.model_key.strip()
-        steps: List[Dict[str, object]] = []
         agent_name = self.resolve_agent_name(request)
         workspace = self.default_workspace(agent_name, request.workspace_root)
         archive_path = self.resolve_archive_path(request)
@@ -72,13 +85,16 @@ class InstanceManagerV2(
                 )
                 existing_gateway_token = self._configured_gateway_token()
 
-            manifest = self._load_template_manifest(template_dir)
-            additional_specs = self._multi_agent_specs_from_template(
-                template_dir=template_dir,
-                manifest=manifest,
-                primary_agent_name=agent_name,
-                workspace_root=request.workspace_root,
-                fallback_model=request.model,
+            additional_specs = self._run_timed_step(
+                steps,
+                "agents.resolve_additional",
+                lambda: self._multi_agent_specs_from_template(
+                    template_dir=template_dir,
+                    manifest=self._load_template_manifest(template_dir),
+                    primary_agent_name=agent_name,
+                    workspace_root=request.workspace_root,
+                    fallback_model=request.model,
+                ),
             )
             additional_agents: List[Dict[str, object]] = []
             for spec in additional_specs:
@@ -194,42 +210,49 @@ class InstanceManagerV2(
                 "archive_path": str(archive_path),
                 "template_dir": str(template_dir) if template_dir else None,
                 "steps": steps,
+                "total_elapsed_ms": self._elapsed_ms(execution_started_at),
             }
         except Exception as exc:
             payload = self._embedded_error_payload(exc)
             if payload.get("rollback") and not (created_agent or created_workspace or additional_provisions):
-                raise
+                payload["total_elapsed_ms"] = self._elapsed_ms(execution_started_at)
+                raise RuntimeError(json.dumps(payload, ensure_ascii=False)) from exc
             rollback_steps: List[Dict[str, object]] = []
             if request.rollback_on_fail:
                 for item in reversed(additional_provisions):
                     item_workspace = Path(str(item["workspace"]))
                     if item.get("created_workspace"):
-                        rollback_steps.append(self._safe_purge_workspace(item_workspace))
+                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(item_workspace))
                     if item.get("created_agent"):
-                        rollback_steps.append(self._safe_delete_agent(str(item["agent_name"])))
+                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(str(item["agent_name"])))
                 if created_workspace:
-                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(workspace))
                 if created_agent:
-                    rollback_steps.append(self._safe_delete_agent(agent_name))
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(agent_name))
                 if created_template_dir and template_dir.exists():
-                    rollback_steps.append(self._safe_purge_template_dir(template_dir))
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_template_dir(template_dir))
                 if config_snapshot is not None:
-                    rollback_steps.append(
-                        self._safe_restore_config_snapshot(config_snapshot)
-                    )
-            raise RuntimeError(
-                json.dumps(
-                    {
-                        "error": str(exc),
-                        "details": self._error_details(exc),
-                        "steps": steps,
-                        "rollback": rollback_steps,
-                    },
-                    ensure_ascii=False,
-                )
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_restore_config_snapshot(config_snapshot))
+            raise self._create_instance_failure(
+                exc, steps, rollback_steps, execution_started_at
             ) from exc
 
-    def _create_local_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
+    def _create_local_instance(
+        self,
+        request: CreateInstanceRequest,
+        execution_started_at: float,
+        steps: List[Dict[str, object]],
+    ) -> Dict[str, object]:
+        try:
+            self._run_timed_step(
+                steps,
+                "request.prepare",
+                lambda: self._create_instance_preparation_result(request, local=True),
+            )
+        except Exception as exc:
+            raise self._create_instance_failure(
+                exc, steps, [], execution_started_at
+            ) from exc
         if not request.model_key.strip():
             raise ValueError("model_key is required")
         if not request.agent_zip and not request.template_name.strip():
@@ -239,7 +262,6 @@ class InstanceManagerV2(
         ai_shop = normalize_shop(request.ai_shop)
         image_quality = normalize_image_quality(request.image_quality)
         model_key = request.model_key.strip()
-        steps: List[Dict[str, object]] = []
         agent_name = self.resolve_agent_name(request)
         workspace_root = request.workspace_root or self.LOCAL_WORKSPACE_ROOT
         workspace = self.default_workspace(agent_name, workspace_root)
@@ -267,13 +289,16 @@ class InstanceManagerV2(
             created_template_dir = bool(provision_result["created_template_dir"])
             created_workspace = bool(provision_result["created_workspace"])
 
-            manifest = self._load_template_manifest(template_dir)
-            additional_specs = self._multi_agent_specs_from_template(
-                template_dir=template_dir,
-                manifest=manifest,
-                primary_agent_name=agent_name,
-                workspace_root=workspace_root,
-                fallback_model=request.model,
+            additional_specs = self._run_timed_step(
+                steps,
+                "agents.resolve_additional",
+                lambda: self._multi_agent_specs_from_template(
+                    template_dir=template_dir,
+                    manifest=self._load_template_manifest(template_dir),
+                    primary_agent_name=agent_name,
+                    workspace_root=workspace_root,
+                    fallback_model=request.model,
+                ),
             )
             additional_agents: List[Dict[str, object]] = []
             for spec in additional_specs:
@@ -371,40 +396,86 @@ class InstanceManagerV2(
                 "config_path": str(self.config_path),
                 "restart_required": True,
                 "steps": steps,
+                "total_elapsed_ms": self._elapsed_ms(execution_started_at),
             }
         except Exception as exc:
             payload = self._embedded_error_payload(exc)
             if payload.get("rollback") and not (created_agent or created_workspace or additional_provisions):
-                raise
+                payload["total_elapsed_ms"] = self._elapsed_ms(execution_started_at)
+                raise RuntimeError(json.dumps(payload, ensure_ascii=False)) from exc
             rollback_steps: List[Dict[str, object]] = []
             if request.rollback_on_fail:
                 for item in reversed(additional_provisions):
                     item_workspace = Path(str(item["workspace"]))
                     if item.get("created_workspace"):
-                        rollback_steps.append(self._safe_purge_workspace(item_workspace))
+                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(item_workspace))
                     if item.get("created_agent"):
-                        rollback_steps.append(self._safe_delete_agent(str(item["agent_name"])))
+                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(str(item["agent_name"])))
                 if created_workspace:
-                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(workspace))
                 if created_agent:
-                    rollback_steps.append(self._safe_delete_agent(agent_name))
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(agent_name))
                 if created_template_dir and template_dir.exists():
-                    rollback_steps.append(self._safe_purge_template_dir(template_dir))
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_template_dir(template_dir))
                 if config_snapshot is not None:
-                    rollback_steps.append(
-                        self._safe_restore_config_snapshot(config_snapshot)
-                    )
-            raise RuntimeError(
-                json.dumps(
-                    {
-                        "error": str(exc),
-                        "details": self._error_details(exc),
-                        "steps": steps,
-                        "rollback": rollback_steps,
-                    },
-                    ensure_ascii=False,
-                )
+                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_restore_config_snapshot(config_snapshot))
+            raise self._create_instance_failure(
+                exc, steps, rollback_steps, execution_started_at
             ) from exc
+
+    def _create_instance_preparation_result(
+        self,
+        request: CreateInstanceRequest,
+        *,
+        local: bool,
+    ) -> Dict[str, object]:
+        if not request.model_key.strip():
+            raise ValueError("model_key is required")
+        if local:
+            if not request.agent_zip and not request.template_name.strip():
+                raise ValueError("template_name or agent_zip is required")
+        elif not request.template_name.strip():
+            raise ValueError("template_name is required")
+
+        self._model_gateway_for_env(request.model_env)
+        ai_shop = normalize_shop(request.ai_shop)
+        image_quality = normalize_image_quality(request.image_quality)
+        agent_name = self.resolve_agent_name(request)
+        workspace_root = (
+            request.workspace_root or self.LOCAL_WORKSPACE_ROOT
+            if local
+            else request.workspace_root
+        )
+        workspace = self.default_workspace(agent_name, workspace_root)
+        return {
+            "local": local,
+            "agent_name": agent_name,
+            "model_env": request.model_env,
+            "ai_shop": ai_shop,
+            "image_quality": image_quality,
+            "workspace": str(workspace),
+            "archive_path": str(self.resolve_archive_path(request)),
+            "template_dir": str(self.resolve_template_dir(request)),
+        }
+
+    def _create_instance_failure(
+        self,
+        exc: Exception,
+        steps: List[Dict[str, object]],
+        rollback_steps: List[Dict[str, object]],
+        execution_started_at: float,
+    ) -> Exception:
+        payload = json.dumps(
+            {
+                "error": str(exc),
+                "details": self._error_details(exc),
+                "steps": steps,
+                "rollback": rollback_steps,
+                "total_elapsed_ms": self._elapsed_ms(execution_started_at),
+            },
+            ensure_ascii=False,
+        )
+        return ValueError(payload) if isinstance(exc, ValueError) else RuntimeError(payload)
 
     def add_agents(self, request: AddAgentsRequest) -> Dict[str, object]:
         if not request.agents:

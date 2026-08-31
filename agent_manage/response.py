@@ -74,6 +74,10 @@ def build_error_response(exc: Exception) -> Dict[str, object]:
     if rollback:
         error["rollback"] = rollback
 
+    total_elapsed_ms = payload.get("total_elapsed_ms") if payload else None
+    if isinstance(total_elapsed_ms, (int, float)):
+        error["total_elapsed_ms"] = total_elapsed_ms
+
     if isinstance(exc, CliArgumentError):
         error["details"] = {
             "kind": "argument",

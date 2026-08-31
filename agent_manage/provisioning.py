@@ -791,11 +791,17 @@ class ProvisioningMixin:
             rollback_steps: List[Dict[str, object]] = []
             if rollback_on_fail:
                 if not workspace_existed_before and workspace.exists():
-                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_workspace(workspace)
+                    )
                 if created_agent:
-                    rollback_steps.append(self._safe_delete_agent(agent_name))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_delete_agent(agent_name)
+                    )
                 if not template_dir_existed_before and template_dir.exists():
-                    rollback_steps.append(self._safe_purge_template_dir(template_dir))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_template_dir(template_dir)
+                    )
             raise RuntimeError(
                 json.dumps(
                     {
@@ -919,9 +925,13 @@ class ProvisioningMixin:
             rollback_steps: List[Dict[str, object]] = []
             if rollback_on_fail:
                 if not workspace_existed_before and workspace.exists():
-                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_workspace(workspace)
+                    )
                 if created_agent:
-                    rollback_steps.append(self._safe_delete_agent(agent_name))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_delete_agent(agent_name)
+                    )
             raise RuntimeError(
                 json.dumps(
                     {

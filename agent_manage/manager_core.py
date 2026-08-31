@@ -133,6 +133,17 @@ class ManagerCore:
         )
         return result
 
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> float:
+        return round((perf_counter() - started_at) * 1000, 1)
+
+    def _run_timed_rollback_step(self, rollback_steps: List[Dict[str, object]], func) -> None:
+        started_at = perf_counter()
+        result = func()
+        if isinstance(result, dict):
+            result["elapsed_ms"] = self._elapsed_ms(started_at)
+        rollback_steps.append(result)
+
     def _step_result_for_response(self, step: str, result: object) -> object:
         """Keep catalog data available internally without returning it in CLI steps."""
         if step != "models.fetch_catalog" or not isinstance(result, dict):

@@ -15,11 +15,19 @@ from agent_manage.response import (
     TYPE_CODE_OUTPUT_TOO_LARGE,
     TYPE_CODE_SUCCESS,
     build_success_response,
+    build_error_response,
     print_json,
 )
 
 
 class CliResponseTest(unittest.TestCase):
+    def test_embedded_failure_response_preserves_total_elapsed_ms(self):
+        response = build_error_response(
+            RuntimeError(json.dumps({"error": "failed", "total_elapsed_ms": 12.3}))
+        )
+
+        self.assertEqual(response["error"]["total_elapsed_ms"], 12.3)
+
     def test_oversized_final_json_returns_small_redacted_error_envelope(self):
         secret = "never-leak-this-secret"
         stdout = io.StringIO()

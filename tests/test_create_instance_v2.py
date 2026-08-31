@@ -888,13 +888,16 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(saved_config["tools"]["sessions"]["visibility"], "all")
             self.assertNotIn("legacy", saved_config["models"]["providers"])
             self.assertEqual(result["template_dir"], str(template_dir.resolve()))
-            self.assertIn("elapsed_ms", result["steps"][0])
+            self.assertIsInstance(result["total_elapsed_ms"], float)
+            self.assertEqual(result["steps"][0]["step"], "request.prepare")
+            self.assertTrue(all("elapsed_ms" in step for step in result["steps"]))
             self.assertEqual(
-                result["steps"][1]["result"]["command"],
+                next(step for step in result["steps"] if step["step"] == "agents.add")["result"]["command"],
                 f"openclaw agents add base --workspace {workspace.resolve()} --non-interactive --json --model openai/gpt-5",
             )
-            self.assertEqual(result["steps"][3]["step"], "models.fetch_catalog")
-            self.assertEqual(result["steps"][4]["step"], "config.configure_models")
+            self.assertIn("agents.resolve_additional", [step["step"] for step in result["steps"]])
+            self.assertEqual(next(step for step in result["steps"] if step["step"] == "models.fetch_catalog")["step"], "models.fetch_catalog")
+            self.assertEqual(next(step for step in result["steps"] if step["step"] == "config.configure_models")["step"], "config.configure_models")
             self.assertEqual(result["steps"][-1]["step"], "workspace.configure_image_generation")
             self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
             self.assertEqual(result["steps"][-3]["step"], "config.configure_gateway_auth")
@@ -1076,9 +1079,11 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(
             [item["step"] for item in result["steps"]],
             [
+                "request.prepare",
                 "template.prepare",
                 "agents.add",
                 "workspace.populate",
+                "agents.resolve_additional",
                 "models.fetch_catalog",
                 "config.configure_models",
                 "config.preserve_gateway_auth",
@@ -1212,14 +1217,16 @@ class CreateInstanceV2Test(unittest.TestCase):
             },
         )
         self.assertEqual(saved_config["tools"]["sessions"]["visibility"], "all")
-        self.assertEqual(result["steps"][0]["step"], "template.prepare")
-        self.assertEqual(result["steps"][1]["step"], "agents.add")
-        self.assertEqual(result["steps"][2]["step"], "workspace.populate")
-        self.assertEqual(result["steps"][3]["step"], "agents.add[legal-contract-reader]")
-        self.assertEqual(result["steps"][4]["step"], "workspace.populate[legal-contract-reader]")
-        self.assertEqual(result["steps"][5]["step"], "agents.add[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][6]["step"], "workspace.populate[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][7]["step"], "models.fetch_catalog")
+        self.assertEqual(result["steps"][0]["step"], "request.prepare")
+        self.assertEqual(result["steps"][1]["step"], "template.prepare")
+        self.assertEqual(result["steps"][2]["step"], "agents.add")
+        self.assertEqual(result["steps"][3]["step"], "workspace.populate")
+        self.assertEqual(result["steps"][4]["step"], "agents.resolve_additional")
+        self.assertEqual(result["steps"][5]["step"], "agents.add[legal-contract-reader]")
+        self.assertEqual(result["steps"][6]["step"], "workspace.populate[legal-contract-reader]")
+        self.assertEqual(result["steps"][7]["step"], "agents.add[legal-risk-reviewer]")
+        self.assertEqual(result["steps"][8]["step"], "workspace.populate[legal-risk-reviewer]")
+        self.assertEqual(result["steps"][9]["step"], "models.fetch_catalog")
 
     def test_configure_models_can_write_cn_gateway_base_url(self):
         runner = FakeRunner()
@@ -1296,9 +1303,9 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
-            self.assertEqual(result["steps"][1]["step"], "libraries.ensure")
-            self.assertEqual(result["steps"][1]["result"]["libraries"][0]["action"], "continue")
-            self.assertEqual(result["steps"][2]["step"], "common_skills.install")
+            self.assertEqual(result["steps"][2]["step"], "libraries.ensure")
+            self.assertEqual(result["steps"][2]["result"]["libraries"][0]["action"], "continue")
+            self.assertEqual(result["steps"][3]["step"], "common_skills.install")
             self.assertEqual(
                 (
                     config_path.parent
@@ -1412,7 +1419,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 (workspace / "skills" / "weather" / "SKILL.md").read_text(encoding="utf-8"),
                 "zip weather\n",
             )
-            self.assertIn("template.prepare", result["steps"][0]["step"])
+            self.assertIn("template.prepare", result["steps"][1]["step"])
             self.assertEqual(result["steps"][-1]["step"], "workspace.configure_image_generation")
             self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
 
@@ -1462,9 +1469,9 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["mode"], "reconciled")
             self.assertEqual(result["gateway_token"], "existing-gateway-token")
             self.assertTrue(result["gateway_token_preserved"])
-            self.assertEqual(result["steps"][1]["step"], "agents.add")
+            self.assertEqual(result["steps"][2]["step"], "agents.add")
             self.assertEqual(
-                result["steps"][1]["result"],
+                result["steps"][2]["result"],
                 {
                     "skipped": True,
                     "reason": "agent_exists",
@@ -1472,7 +1479,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                result["steps"][5]["step"],
+                next(step for step in result["steps"] if step["step"] == "config.preserve_gateway_auth")["step"],
                 "config.preserve_gateway_auth",
             )
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -1626,9 +1633,9 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertIsInstance(result["gateway_token"], str)
-            self.assertEqual(result["steps"][2]["step"], "workspace.populate")
+            self.assertEqual(result["steps"][3]["step"], "workspace.populate")
             self.assertEqual(
-                result["steps"][2]["result"],
+                result["steps"][3]["result"],
                 {
                     "skipped": True,
                     "reason": "workspace_not_empty",
@@ -1658,7 +1665,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 template_root=str(template_root),
                 config_path=str(config_path),
             )
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as raised:
                 manager.create_instance(
                     CreateInstanceRequest(
                         template_name="base",
@@ -1726,7 +1733,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 template_root=str(template_root),
                 config_path=str(config_path),
             )
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as raised:
                 manager.create_instance(
                     CreateInstanceRequest(
                         template_name="base",
@@ -1736,6 +1743,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                 )
 
             self.assertFalse(workspace.exists())
+            failure = json.loads(str(raised.exception))
+            self.assertIsInstance(failure["total_elapsed_ms"], float)
+            self.assertTrue(failure["rollback"])
+            self.assertTrue(all("elapsed_ms" in item for item in failure["rollback"]))
 
     def test_create_instance_dry_run_keeps_workspace_unmodified(self):
         runner = FakeRunner(dry_run=True)
