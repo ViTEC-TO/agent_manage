@@ -42,8 +42,11 @@ class ManagerCoreConfigTest(unittest.TestCase):
             result = InstanceManagerV2(DummyRunner(), config_path=str(config_path))._configure_gateway_auth("gateway-token")
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["gateway"]["controlUi"], original["gateway"]["controlUi"])
+            self.assertEqual(saved["gateway"]["controlUi"]["allowedOrigins"], ["https://existing.example"])
+            self.assertEqual(saved["gateway"]["controlUi"]["theme"], "dark")
+            self.assertTrue(saved["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"])
             self.assertNotIn("control_ui_allowed_origins", result)
+            self.assertTrue(result["control_ui_device_auth_disabled"])
             self.assertNotIn("gateway_token", result)
 
     def test_container_gateway_auth_merges_and_deduplicates_control_ui_origin(self):
@@ -83,8 +86,10 @@ class ManagerCoreConfigTest(unittest.TestCase):
             )
             self.assertEqual(saved["gateway"]["controlUi"]["theme"], "dark")
             self.assertEqual(saved["gateway"]["controlUi"]["custom"], {"keep": True})
+            self.assertTrue(saved["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"])
             self.assertEqual(saved["gateway"]["otherGatewayField"], "preserved")
             self.assertEqual(result["control_ui_allowed_origins"], ["https://existing.example", "https://new.example"])
+            self.assertTrue(result["control_ui_device_auth_disabled"])
             self.assertNotIn("gateway_token", result)
 
     def test_invalid_container_control_ui_origin_fails_before_config_write(self):
@@ -131,6 +136,7 @@ class ManagerCoreConfigTest(unittest.TestCase):
 
             self.assertTrue(result["skipped"])
             self.assertEqual(result["control_ui_allowed_origins"], ["https://control.example"])
+            self.assertTrue(result["control_ui_device_auth_disabled"])
             self.assertNotIn("gateway_token", result)
             self.assertEqual(config_path.read_text(encoding="utf-8"), original)
 
@@ -149,6 +155,7 @@ class ManagerCoreConfigTest(unittest.TestCase):
             saved = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["gateway"]["controlUi"], {"theme": "dark"})
             self.assertNotIn("control_ui_allowed_origins", result)
+            self.assertNotIn("control_ui_device_auth_disabled", result)
 
     def test_config_write_is_atomic_private_and_cleans_failed_temp_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

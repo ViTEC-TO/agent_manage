@@ -104,6 +104,7 @@ class GatewayManagementMixin:
     def _configure_gateway_auth(self, gateway_token: str) -> Dict[str, object]:
         config_path = self.config_path
         control_ui_origin = self._container_control_ui_origin()
+        disable_device_auth = self.container_runtime
         if self.runner.dry_run:
             result: Dict[str, object] = {
                 "skipped": True,
@@ -112,6 +113,8 @@ class GatewayManagementMixin:
             }
             if control_ui_origin is not None:
                 result["control_ui_allowed_origins"] = [control_ui_origin]
+            if disable_device_auth:
+                result["control_ui_device_auth_disabled"] = True
             return result
 
         config = self._load_config()
@@ -124,15 +127,18 @@ class GatewayManagementMixin:
         auth["token"] = gateway_token
 
         control_ui_allowed_origins = None
-        if control_ui_origin is not None:
+        if control_ui_origin is not None or disable_device_auth:
             control_ui = gateway.setdefault("controlUi", {})
             if not isinstance(control_ui, dict):
                 raise ValueError("gateway.controlUi must be a JSON object")
-            control_ui_allowed_origins = self._merge_control_ui_allowed_origins(
-                control_ui.get("allowedOrigins"),
-                control_ui_origin,
-            )
-            control_ui["allowedOrigins"] = control_ui_allowed_origins
+            if control_ui_origin is not None:
+                control_ui_allowed_origins = self._merge_control_ui_allowed_origins(
+                    control_ui.get("allowedOrigins"),
+                    control_ui_origin,
+                )
+                control_ui["allowedOrigins"] = control_ui_allowed_origins
+            if disable_device_auth:
+                control_ui["dangerouslyDisableDeviceAuth"] = True
 
         changed_paths = [
             "gateway.auth.mode",
@@ -140,6 +146,8 @@ class GatewayManagementMixin:
         ]
         if control_ui_allowed_origins is not None:
             changed_paths.append("gateway.controlUi.allowedOrigins")
+        if disable_device_auth:
+            changed_paths.append("gateway.controlUi.dangerouslyDisableDeviceAuth")
         self._write_config(
             config,
             note="configure gateway auth for create_instance",
@@ -154,6 +162,8 @@ class GatewayManagementMixin:
         }
         if control_ui_allowed_origins is not None:
             result["control_ui_allowed_origins"] = control_ui_allowed_origins
+        if disable_device_auth:
+            result["control_ui_device_auth_disabled"] = True
         return result
 
     def _container_control_ui_origin(self) -> Optional[str]:
