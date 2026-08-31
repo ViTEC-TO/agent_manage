@@ -164,7 +164,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 CreateInstanceRequest(
                     template_name=args.template_name,
                     model_key=_secret_argument(
-                        args.model_key, args.model_key_stdin, sensitive_values
+                        args.model_key,
+                        args.model_key_stdin,
+                        sensitive_values,
+                        client.runner.add_redaction_value,
                     ),
                     model_env=args.model_env,
                     ai_shop=args.ai_shop,
@@ -202,7 +205,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 AddTelegramBotRequest(
                     agent_name=args.agent,
                     bot_token=_secret_argument(
-                        args.tg_token, args.tg_token_stdin, sensitive_values
+                        args.tg_token,
+                        args.tg_token_stdin,
+                        sensitive_values,
+                        client.runner.add_redaction_value,
                     ),
                     bot_name=args.bot_name,
                 )
@@ -217,7 +223,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     account_id=args.account_id,
                     app_id=args.app_id,
                     app_secret=_secret_argument(
-                        args.app_secret, args.app_secret_stdin, sensitive_values
+                        args.app_secret,
+                        args.app_secret_stdin,
+                        sensitive_values,
+                        client.runner.add_redaction_value,
                     ),
                     bot_name=args.bot_name,
                     dm_policy=args.dm_policy,
@@ -234,7 +243,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     agent_name=args.agent,
                     ilink_bot_id=args.ilink_bot_id,
                     bot_token=_secret_argument(
-                        args.bot_token, args.bot_token_stdin, sensitive_values
+                        args.bot_token,
+                        args.bot_token_stdin,
+                        sensitive_values,
+                        client.runner.add_redaction_value,
                     ),
                     baseurl=args.baseurl,
                     ilink_user_id=args.ilink_user_id,
@@ -381,11 +393,15 @@ def _read_secret_from_stdin() -> str:
 
 
 def _secret_argument(
-    plaintext: Optional[str], from_stdin: bool, sensitive_values: List[str]
+    plaintext: Optional[str],
+    from_stdin: bool,
+    sensitive_values: List[str],
+    register_redaction,
 ) -> str:
     value = _read_secret_from_stdin() if from_stdin else (plaintext or "")
     if value:
         sensitive_values.append(value)
+        register_redaction(value)
         return value
     raise ValueError("Secret value must not be empty")
 

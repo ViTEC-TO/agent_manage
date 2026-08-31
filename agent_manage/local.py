@@ -30,6 +30,7 @@ class CommandError(RuntimeError):
 
 
 class LocalRunner:
+    COMMAND_OUTPUT_TAIL_BYTES = 16 * 1024
     def __init__(
         self,
         openclaw_bin: str = "openclaw",
@@ -39,6 +40,11 @@ class LocalRunner:
         self.openclaw_bin = openclaw_bin
         self.project_dir = Path(project_dir).expanduser().resolve() if project_dir else None
         self.dry_run = dry_run
+        self._redaction_values: List[str] = []
+
+    def add_redaction_value(self, value: str) -> None:
+        if value and value not in self._redaction_values:
+            self._redaction_values.append(value)
 
     def run(
         self,
@@ -75,15 +81,19 @@ class LocalRunner:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
+            stdout = self._as_text(exc.stdout)
+            stderr = self._as_text(exc.stderr)
             result = CommandResult(
                 argv=argv,
                 command_text=command_text,
                 returncode=124,
-                stdout=exc.stdout or "",
-                stderr=(exc.stderr or "") + f"\nCommand timed out after {timeout} seconds",
+                stdout=stdout,
+                stderr=stderr + f"\nCommand timed out after {timeout} seconds",
                 timed_out=True,
             )
             self._log(f"timeout after {timeout}s: {command_text}")
+            self._log_command_output_tail("stderr", result.stderr)
+            self._log_command_output_tail("stdout", result.stdout)
             raise CommandError(
                 f"Command timed out after {timeout} seconds",
                 result,
@@ -97,10 +107,8 @@ class LocalRunner:
         )
         if completed.returncode != 0:
             self._log(f"failed ({completed.returncode}): {command_text}")
-            if completed.stderr.strip():
-                self._log(f"stderr: {completed.stderr.strip()}")
-            if completed.stdout.strip():
-                self._log(f"stdout: {completed.stdout.strip()}")
+            self._log_command_output_tail("stderr", completed.stderr)
+            self._log_command_output_tail("stdout", completed.stdout)
             raise CommandError(
                 f"Command failed with exit code {completed.returncode}",
                 result,
@@ -122,7 +130,6 @@ class LocalRunner:
         assert process.stdout is not None
         for line in process.stdout:
             output_lines.append(line)
-            self._log(f"output: {line.rstrip()}")
         process.stdout.close()
         returncode = process.wait()
         stdout = "".join(output_lines)
@@ -135,12 +142,13 @@ class LocalRunner:
         )
         if returncode != 0:
             self._log(f"failed ({returncode}): {command_text}")
-            if stdout.strip():
-                self._log(f"stdout: {stdout.strip()}")
+            self._log_command_output_tail("stdout", stdout)
             raise CommandError(
                 f"Command failed with exit code {returncode}",
                 result,
             )
+        for line in output_lines:
+            self._log(f"output: {line.rstrip()}")
         self._log(f"done ({returncode}): {command_text}")
         return result
 
@@ -157,7 +165,30 @@ class LocalRunner:
         print(f"[agentctl {timestamp}] {message}", file=sys.stderr, flush=True)
 
     def _log(self, message: str) -> None:
-        self.log(message)
+        self.log(self._redact(message))
+
+    def _log_command_output_tail(self, stream_name: str, value: str) -> None:
+        if not value:
+            return
+        raw = value.encode("utf-8", errors="replace")
+        tail = raw[-self.COMMAND_OUTPUT_TAIL_BYTES :]
+        tail_text = tail.decode("utf-8", errors="replace")
+        truncated = len(raw) > len(tail)
+        self._log(
+            f"{stream_name}: utf8_bytes={len(raw)} truncated={str(truncated).lower()} "
+            f"tail={tail_text}"
+        )
+
+    def _redact(self, value: str) -> str:
+        for secret in self._redaction_values:
+            value = value.replace(secret, "[REDACTED]")
+        return value
+
+    @staticmethod
+    def _as_text(value: str | bytes | None) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value or ""
 
     def _command_env(self) -> dict[str, str]:
         env = os.environ.copy()

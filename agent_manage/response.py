@@ -15,6 +15,8 @@ TYPE_CODE_CONFLICT = 12
 TYPE_CODE_COMMAND_FAILED = 20
 TYPE_CODE_OPERATION_ROLLED_BACK = 21
 TYPE_CODE_INTERNAL_ERROR = 50
+TYPE_CODE_OUTPUT_TOO_LARGE = 20
+MAX_PROTOCOL_RESPONSE_BYTES = 512 * 1024
 
 
 class CliArgumentError(ValueError):
@@ -102,7 +104,25 @@ def redact_sensitive_values(value: object, secrets: list[str]) -> object:
 
 
 def print_json(value: object) -> None:
-    print(json.dumps(value, indent=2, ensure_ascii=False))
+    serialized = json.dumps(value, indent=2, ensure_ascii=False)
+    encoded = serialized.encode("utf-8")
+    if len(encoded) > MAX_PROTOCOL_RESPONSE_BYTES:
+        serialized = json.dumps(
+            {
+                "result": None,
+                "error": {
+                    "code": "RESPONSE_OUTPUT_TOO_LARGE",
+                    "details": {"totalUtf8Bytes": len(encoded)},
+                },
+                "typeCode": TYPE_CODE_OUTPUT_TOO_LARGE,
+                "message": "AgentManager response exceeds the 512 KiB output budget",
+                "serverTimeStamp": _server_timestamp(),
+                "restartRequired": False,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    print(serialized)
 
 
 def _server_timestamp() -> str:

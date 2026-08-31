@@ -9,13 +9,33 @@ from agent_manage import __version__
 from agent_manage.cli import main as agent_manage_main
 from agent_manage.models import AddAgentsRequest
 from agent_manage.response import (
+    MAX_PROTOCOL_RESPONSE_BYTES,
     TYPE_CODE_INVALID_ARGUMENT,
     TYPE_CODE_NOT_FOUND,
+    TYPE_CODE_OUTPUT_TOO_LARGE,
     TYPE_CODE_SUCCESS,
+    build_success_response,
+    print_json,
 )
 
 
 class CliResponseTest(unittest.TestCase):
+    def test_oversized_final_json_returns_small_redacted_error_envelope(self):
+        secret = "never-leak-this-secret"
+        stdout = io.StringIO()
+        oversized = build_success_response({"payload": secret + ("x" * MAX_PROTOCOL_RESPONSE_BYTES)})
+
+        with redirect_stdout(stdout):
+            print_json(oversized)
+
+        output = stdout.getvalue()
+        payload = json.loads(output)
+        self.assertLess(len(output.encode("utf-8")), 8_192)
+        self.assertEqual(payload["typeCode"], TYPE_CODE_OUTPUT_TOO_LARGE)
+        self.assertEqual(payload["error"]["code"], "RESPONSE_OUTPUT_TOO_LARGE")
+        self.assertGreater(payload["error"]["details"]["totalUtf8Bytes"], MAX_PROTOCOL_RESPONSE_BYTES)
+        self.assertNotIn(secret, output)
+
     def test_agent_manage_version_uses_package_version(self):
         stdout = io.StringIO()
         with self.assertRaises(SystemExit) as raised, redirect_stdout(stdout):
