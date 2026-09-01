@@ -1,5 +1,41 @@
 # Agent Manage
 
+## Prebuilt container image
+
+Template images split immutable Agent registration from order-specific runtime configuration:
+
+```bash
+# Image build: no ticket, token, or model secret is accepted.
+python3 scripts/agentctl.py add-agent \
+  --template-name unipay-claw-base \
+  --workspace-root /home/node/.openclaw/data
+
+# Container runtime: the model key is supplied only after the writable volume is mounted.
+printf '%s' "$MODEL_KEY" | python3 scripts/agentctl.py configure-instance \
+  --template-name unipay-claw-base \
+  --model-key-stdin
+```
+
+`add-agent` expands `template.yaml` multi-agent declarations and continues to use the
+official `openclaw agents add --non-interactive --json` command. `configure-instance`
+requires every declared Agent to already exist and never registers one implicitly.
+The compatibility `create-instance` command uses the same internal registration and
+configuration stages and continues to register missing Agents.
+
+Build assets are under `container-image/`. Put the release archive at
+`container-image/templates/{templateIdentify}.zip`, then run:
+
+```powershell
+.\container-image\build-prebuilt-image.ps1 `
+  -TemplateIdentify unipay-claw-base `
+  -ImageTag unitag/openclaw-unipay-claw-base:poc
+```
+
+The build defaults to DockerManager's pinned OpenClaw `2026.7.1-1` digest and targets
+`linux/amd64`. A different immutable base can be supplied with `-OpenClawImage` and
+its corresponding label with `-OpenClawVersion`. At runtime, the entrypoint copies
+`/opt/unitag/openclaw-seed` into `/home/node/.openclaw` only for an empty volume.
+
 ## Container runtime (Execute v1)
 
 When DockerManager executes AgentManager inside a managed Container, it sets

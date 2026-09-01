@@ -741,6 +741,7 @@ class ProvisioningMixin:
         model: Optional[str],
         rollback_on_fail: bool,
         step_scope: Optional[str],
+        require_existing_agent: bool = False,
     ) -> Dict[str, object]:
         workspace_existed_before = workspace.exists()
         template_dir_existed_before = template_dir.exists()
@@ -788,11 +789,19 @@ class ProvisioningMixin:
                     lambda: self._install_common_skills(common_skill_sources),
                 )
 
+            if require_existing_agent and not agent_exists:
+                raise FileNotFoundError(
+                    f"Prebuilt agent is missing from OpenClaw config: {agent_name}"
+                )
             if agent_exists:
                 self.runner.log(f"agent exists, skip add: {agent_name}")
                 agent_result = {
                     "skipped": True,
-                    "reason": "agent_exists",
+                    "reason": (
+                        "prebuilt_agent_verified"
+                        if require_existing_agent
+                        else "agent_exists"
+                    ),
                     "agent_name": agent_name,
                 }
                 steps.append(
@@ -893,6 +902,7 @@ class ProvisioningMixin:
         model: Optional[str],
         rollback_on_fail: bool,
         step_scope: Optional[str],
+        require_existing_agent: bool = False,
     ) -> Dict[str, object]:
         if not template_dir.is_dir():
             raise FileNotFoundError(f"Agent template folder not found: {template_dir}")
@@ -926,11 +936,19 @@ class ProvisioningMixin:
                     lambda: self._install_common_skills(common_skill_sources),
                 )
 
+            if require_existing_agent and not agent_exists:
+                raise FileNotFoundError(
+                    f"Prebuilt agent is missing from OpenClaw config: {agent_name}"
+                )
             if agent_exists:
                 self.runner.log(f"agent exists, skip add: {agent_name}")
                 agent_result = {
                     "skipped": True,
-                    "reason": "agent_exists",
+                    "reason": (
+                        "prebuilt_agent_verified"
+                        if require_existing_agent
+                        else "agent_exists"
+                    ),
                     "agent_name": agent_name,
                 }
                 steps.append(

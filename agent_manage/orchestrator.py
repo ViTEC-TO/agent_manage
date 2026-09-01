@@ -11,7 +11,7 @@ from .channel_management import ChannelManagementMixin
 from .gateway_management import GatewayManagementMixin
 from .manager_core import ManagerCore
 from .model_management import ModelManagementMixin
-from .models import AddAgentsRequest, CreateInstanceRequest
+from .models import AddAgentRequest, AddAgentsRequest, CreateInstanceRequest
 from .provisioning import ProvisioningMixin
 from .settings import normalize_image_quality, normalize_shop
 
@@ -26,10 +26,51 @@ class InstanceManagerV2(
     """Coordinate instance creation across the domain-specific manager mixins."""
 
     def create_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
+        """Compatibility workflow: register missing agents, then configure the instance."""
+        return self._execute_instance(request, require_prebuilt_agents=False)
+
+    def configure_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
+        """Configure an image-seeded instance without ever registering an agent."""
+        return self._execute_instance(request, require_prebuilt_agents=True)
+
+    def add_agent(
+        self,
+        *,
+        template_name: str,
+        agent_name: str | None = None,
+        workspace_root: str = "~/data",
+        model: str | None = None,
+    ) -> Dict[str, object]:
+        """Register a template's primary and manifest-declared agents."""
+        resolved_agent_name = (agent_name or template_name).strip()
+        return self.add_agents(
+            AddAgentsRequest(
+                agents=[
+                    AddAgentRequest(
+                        agent_name=resolved_agent_name,
+                        template_name=template_name,
+                        model=model,
+                    )
+                ],
+                workspace_root=workspace_root,
+            )
+        )
+
+    def _execute_instance(
+        self,
+        request: CreateInstanceRequest,
+        *,
+        require_prebuilt_agents: bool,
+    ) -> Dict[str, object]:
         execution_started_at = perf_counter()
         steps: List[Dict[str, object]] = []
         if request.local:
-            return self._create_local_instance(request, execution_started_at, steps)
+            return self._create_local_instance(
+                request,
+                execution_started_at,
+                steps,
+                require_prebuilt_agents=require_prebuilt_agents,
+            )
 
         try:
             self._run_timed_step(
@@ -71,6 +112,7 @@ class InstanceManagerV2(
                 model=request.model,
                 rollback_on_fail=request.rollback_on_fail,
                 step_scope=None,
+                require_existing_agent=require_prebuilt_agents,
             )
             created_agent = bool(provision_result["created_agent"])
             created_template_dir = bool(provision_result["created_template_dir"])
@@ -107,6 +149,7 @@ class InstanceManagerV2(
                     model=spec["model"] if isinstance(spec.get("model"), str) else None,
                     rollback_on_fail=request.rollback_on_fail,
                     step_scope=str(spec["agent_name"]),
+                    require_existing_agent=require_prebuilt_agents,
                 )
                 additional_provisions.append(
                     {
@@ -196,7 +239,11 @@ class InstanceManagerV2(
 
             return {
                 "ok": True,
-                "mode": "reconciled" if reconcile_existing else "created",
+                "mode": (
+                    "configured"
+                    if require_prebuilt_agents
+                    else ("reconciled" if reconcile_existing else "created")
+                ),
                 "template_name": request.template_name,
                 "agent_name": agent_name,
                 "additional_agents": additional_agents,
@@ -242,6 +289,8 @@ class InstanceManagerV2(
         request: CreateInstanceRequest,
         execution_started_at: float,
         steps: List[Dict[str, object]],
+        *,
+        require_prebuilt_agents: bool,
     ) -> Dict[str, object]:
         try:
             self._run_timed_step(
@@ -284,6 +333,7 @@ class InstanceManagerV2(
                 model=request.model,
                 rollback_on_fail=request.rollback_on_fail,
                 step_scope=None,
+                require_existing_agent=require_prebuilt_agents,
             )
             created_agent = bool(provision_result["created_agent"])
             created_template_dir = bool(provision_result["created_template_dir"])
@@ -311,6 +361,7 @@ class InstanceManagerV2(
                     model=spec["model"] if isinstance(spec.get("model"), str) else None,
                     rollback_on_fail=request.rollback_on_fail,
                     step_scope=str(spec["agent_name"]),
+                    require_existing_agent=require_prebuilt_agents,
                 )
                 additional_provisions.append(
                     {

@@ -21,6 +21,50 @@ from agent_manage.response import (
 
 
 class CliResponseTest(unittest.TestCase):
+    def test_agent_manage_add_agent_dispatches_template_registration(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {"ok": True}
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "add-agent",
+                        "--template-name",
+                        "team",
+                        "--agent-name",
+                        "primary",
+                        "--workspace-root",
+                        "/data",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        manager_cls.return_value.add_agent.assert_called_once_with(
+            template_name="team",
+            agent_name="primary",
+            workspace_root="/data",
+            model=None,
+        )
+
+    def test_agent_manage_configure_instance_dispatches_without_create(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.configure_instance.return_value = {"ok": True}
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "configure-instance",
+                        "--template-name",
+                        "base",
+                        "--model-key",
+                        "runtime-secret",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        manager_cls.return_value.configure_instance.assert_called_once()
+        manager_cls.return_value.create_instance.assert_not_called()
+
     def test_embedded_failure_response_preserves_total_elapsed_ms(self):
         response = build_error_response(
             RuntimeError(json.dumps({"error": "failed", "total_elapsed_ms": 12.3}))

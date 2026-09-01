@@ -3654,6 +3654,110 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
             self.assertTrue(payload["rollback"][-1]["result"]["restored"])
 
+    def test_add_agent_registers_primary_and_manifest_agents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_root = root / "templates"
+            template_root.mkdir()
+            self._write_archive(
+                template_root / "team.zip",
+                {
+                    "template.yaml": "copyMode: multi_agent_template\n",
+                    "AGENTS.md": "primary\n",
+                    "agents/reviewer/AGENTS.md": "reviewer\n",
+                },
+            )
+            runner = FakeRunner()
+            self._write_host_config(root / "openclaw.json")
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(root / "openclaw.json"),
+            )
+
+            result = manager.add_agent(
+                template_name="team",
+                workspace_root=str(root / "data"),
+            )
+
+            add_calls = [call for call in runner.calls if call[:3] == ["openclaw", "agents", "add"]]
+            self.assertEqual([call[3] for call in add_calls], ["team", "reviewer"])
+            self.assertEqual(result["added_count"], 2)
+
+    def test_configure_instance_never_adds_missing_prebuilt_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_root = root / "templates"
+            template_root.mkdir()
+            self._write_archive(template_root / "base.zip", {"AGENTS.md": "base\n"})
+            runner = FakeRunner()
+            self._write_host_config(root / "openclaw.json")
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(root / "openclaw.json"),
+            )
+
+            with self.assertRaises(RuntimeError) as raised:
+                manager.configure_instance(
+                    CreateInstanceRequest(
+                        template_name="base",
+                        model_key="runtime-secret",
+                        workspace_root=str(root / "data"),
+                    )
+                )
+
+            self.assertIn("Prebuilt agent is missing", str(raised.exception))
+            self.assertFalse(
+                any(call[:3] == ["openclaw", "agents", "add"] for call in runner.calls)
+            )
+
+    def test_configure_instance_uses_prebuilt_multi_agent_seed_without_add(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_root = root / "templates"
+            template_root.mkdir()
+            self._write_archive(
+                template_root / "team.zip",
+                {
+                    "template.yaml": "copyMode: multi_agent_template\n",
+                    "AGENTS.md": "primary\n",
+                    "agents/reviewer/AGENTS.md": "reviewer\n",
+                },
+            )
+            config_path = root / "openclaw.json"
+            self._write_host_config(
+                config_path,
+                {
+                    "agents": {
+                        "list": [
+                            {"id": "team", "workspace": str(root / "data" / "team")},
+                            {"id": "reviewer", "workspace": str(root / "data" / "reviewer")},
+                        ]
+                    }
+                },
+            )
+            runner = FakeRunner()
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            result = manager.configure_instance(
+                CreateInstanceRequest(
+                    template_name="team",
+                    model_key="runtime-secret",
+                    workspace_root=str(root / "data"),
+                )
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["mode"], "configured")
+            self.assertFalse(
+                any(call[:3] == ["openclaw", "agents", "add"] for call in runner.calls)
+            )
+
     def _write_archive(self, archive_path: Path, files):
         with zipfile.ZipFile(archive_path, "w") as archive:
             for name, content in files.items():

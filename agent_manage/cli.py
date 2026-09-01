@@ -48,30 +48,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create_instance = subparsers.add_parser("create-instance")
-    create_instance.add_argument("--template-name")
-    create_instance.add_argument("--agent-zip")
-    create_instance.add_argument("--local", action="store_true")
-    create_instance_model_key = create_instance.add_mutually_exclusive_group(required=True)
-    create_instance_model_key.add_argument("--model-key")
-    create_instance_model_key.add_argument("--model-key-stdin", action="store_true")
-    create_instance.add_argument(
-        "--model-env",
-        choices=MODEL_ENV_CHOICES,
-        default=DEFAULT_MODEL_ENV,
-    )
-    create_instance.add_argument(
-        "--ai-shop",
-        default=DEFAULT_AI_SHOP,
-        help=f"model shop path (default: {DEFAULT_AI_SHOP})",
-    )
-    create_instance.add_argument("--model")
-    create_instance.add_argument(
-        "--image-quality",
-        choices=IMAGE_QUALITY_CHOICES,
-        default=DEFAULT_IMAGE_QUALITY,
-    )
-    create_instance.add_argument("--workspace-root")
-    create_instance.add_argument("--no-rollback", action="store_true")
+    _add_instance_arguments(create_instance)
+
+    configure_instance = subparsers.add_parser("configure-instance")
+    _add_instance_arguments(configure_instance)
+
+    add_agent = subparsers.add_parser("add-agent")
+    add_agent.add_argument("--template-name", required=True)
+    add_agent.add_argument("--agent-name")
+    add_agent.add_argument("--workspace-root")
+    add_agent.add_argument("--model")
 
     add_agents = subparsers.add_parser("add-agents")
     add_agents.add_argument("--agents", required=True)
@@ -159,30 +145,47 @@ def main(argv: Optional[List[str]] = None) -> int:
             config_path=args.config_path,
         )
 
-        if args.command == "create-instance":
-            result = client.create_instance(
-                CreateInstanceRequest(
-                    template_name=args.template_name,
-                    model_key=_secret_argument(
-                        args.model_key,
-                        args.model_key_stdin,
-                        sensitive_values,
-                        client.runner.add_redaction_value,
-                    ),
-                    model_env=args.model_env,
-                    ai_shop=args.ai_shop,
-                    model=args.model,
-                    image_quality=args.image_quality,
-                    workspace_root=args.workspace_root
-                    or (
-                        InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
-                        if container_runtime
-                        else ("~/.openclaw/data" if args.local else "~/data")
-                    ),
-                    rollback_on_fail=not args.no_rollback,
-                    agent_zip=args.agent_zip,
-                    local=args.local,
-                )
+        if args.command in ("create-instance", "configure-instance"):
+            request = CreateInstanceRequest(
+                template_name=args.template_name,
+                model_key=_secret_argument(
+                    args.model_key,
+                    args.model_key_stdin,
+                    sensitive_values,
+                    client.runner.add_redaction_value,
+                ),
+                model_env=args.model_env,
+                ai_shop=args.ai_shop,
+                model=args.model,
+                image_quality=args.image_quality,
+                workspace_root=args.workspace_root
+                or (
+                    InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
+                    if container_runtime
+                    else ("~/.openclaw/data" if args.local else "~/data")
+                ),
+                rollback_on_fail=not args.no_rollback,
+                agent_zip=args.agent_zip,
+                local=args.local,
+            )
+            result = (
+                client.create_instance(request)
+                if args.command == "create-instance"
+                else client.configure_instance(request)
+            )
+            print_json(_success_response(result, client))
+            return 0
+        if args.command == "add-agent":
+            result = client.add_agent(
+                template_name=args.template_name,
+                agent_name=args.agent_name,
+                workspace_root=args.workspace_root
+                or (
+                    InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
+                    if container_runtime
+                    else "~/data"
+                ),
+                model=args.model,
             )
             print_json(_success_response(result, client))
             return 0
@@ -381,6 +384,33 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
             )
         )
     return agents
+
+
+def _add_instance_arguments(parser) -> None:
+    parser.add_argument("--template-name")
+    parser.add_argument("--agent-zip")
+    parser.add_argument("--local", action="store_true")
+    model_key = parser.add_mutually_exclusive_group(required=True)
+    model_key.add_argument("--model-key")
+    model_key.add_argument("--model-key-stdin", action="store_true")
+    parser.add_argument(
+        "--model-env",
+        choices=MODEL_ENV_CHOICES,
+        default=DEFAULT_MODEL_ENV,
+    )
+    parser.add_argument(
+        "--ai-shop",
+        default=DEFAULT_AI_SHOP,
+        help=f"model shop path (default: {DEFAULT_AI_SHOP})",
+    )
+    parser.add_argument("--model")
+    parser.add_argument(
+        "--image-quality",
+        choices=IMAGE_QUALITY_CHOICES,
+        default=DEFAULT_IMAGE_QUALITY,
+    )
+    parser.add_argument("--workspace-root")
+    parser.add_argument("--no-rollback", action="store_true")
 
 
 def _read_secret_from_stdin() -> str:
