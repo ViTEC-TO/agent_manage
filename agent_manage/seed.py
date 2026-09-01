@@ -41,20 +41,50 @@ def assert_seed_has_no_runtime_secrets(seed_dir: Path) -> None:
     visit(payload)
 
 
+def _deep_merge_seed_with_runtime(seed_value: object, runtime_value: object) -> object:
+    """Merge a runtime config over its secret-free image seed base.
+
+    Dictionaries are merged recursively so an early DockerManager write such as
+    ``gateway.auth.token`` does not remove the pre-registered ``agents`` tree.
+    Lists and scalar values intentionally use the runtime value as-is: they are
+    user/runtime-owned OpenClaw configuration, not seed defaults.
+    """
+    if isinstance(seed_value, dict) and isinstance(runtime_value, dict):
+        merged = dict(seed_value)
+        for key, value in runtime_value.items():
+            merged[key] = _deep_merge_seed_with_runtime(merged[key], value) if key in merged else value
+        return merged
+    return runtime_value
+
+
+def _merged_runtime_config(seed_config_path: Path, runtime_config_path: Path) -> str:
+    seed_config = json.loads(seed_config_path.read_text(encoding="utf-8"))
+    if not isinstance(seed_config, dict):
+        raise ValueError(f"OpenClaw seed config must be a JSON object: {seed_config_path}")
+    if not runtime_config_path.is_file():
+        return json.dumps(seed_config, ensure_ascii=False, indent=2) + "\n"
+
+    runtime_config = json.loads(runtime_config_path.read_text(encoding="utf-8"))
+    if not isinstance(runtime_config, dict):
+        raise ValueError(f"Runtime OpenClaw config must be a JSON object: {runtime_config_path}")
+    merged = _deep_merge_seed_with_runtime(seed_config, runtime_config)
+    return json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
+
+
 def initialize_openclaw_seed(seed_dir: Path, target_dir: Path) -> dict[str, object]:
     seed_dir = seed_dir.resolve()
     target_dir = target_dir.resolve()
     if not seed_dir.is_dir() or not any(seed_dir.iterdir()):
         raise FileNotFoundError(f"OpenClaw seed is missing or empty: {seed_dir}")
+    assert_seed_has_no_runtime_secrets(seed_dir)
 
     target_dir.mkdir(parents=True, exist_ok=True)
     initializing = target_dir / INITIALIZING_MARKER
     initialized = target_dir / INITIALIZED_MARKER
-    existing = [item for item in target_dir.iterdir() if item.name != INITIALIZING_MARKER]
-    if existing and not initializing.exists():
+    if initialized.exists():
         return {
             "initialized": False,
-            "reason": "target_not_empty",
+            "reason": "already_initialized",
             "target": str(target_dir),
         }
 
@@ -62,12 +92,20 @@ def initialize_openclaw_seed(seed_dir: Path, target_dir: Path) -> dict[str, obje
     copied: list[str] = []
     try:
         for source in sorted(seed_dir.iterdir(), key=lambda item: item.name):
+            if source.name == "openclaw.json":
+                continue
             destination = target_dir / source.name
             if source.is_dir():
                 shutil.copytree(source, destination, dirs_exist_ok=True)
             else:
                 shutil.copy2(source, destination)
             copied.append(source.name)
+        runtime_config_path = target_dir / "openclaw.json"
+        runtime_config_path.write_text(
+            _merged_runtime_config(seed_dir / "openclaw.json", runtime_config_path),
+            encoding="utf-8",
+        )
+        copied.append("openclaw.json")
         initialized.write_text("1\n", encoding="ascii")
     finally:
         initializing.unlink(missing_ok=True)
