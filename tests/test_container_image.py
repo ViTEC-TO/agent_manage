@@ -120,9 +120,8 @@ class ContainerImageTest(unittest.TestCase):
                 initialize_openclaw_seed(root / "missing", root / "target")
 
     def test_image_build_assets_do_not_accept_runtime_secrets(self):
-        dockerfile = (
-            Path(__file__).resolve().parents[1] / "container-image" / "Dockerfile"
-        ).read_text(encoding="utf-8")
+        image_directory = Path(__file__).resolve().parents[1] / "container-image"
+        dockerfile = (image_directory / "Dockerfile").read_text(encoding="utf-8")
         upper = dockerfile.upper()
         self.assertNotIn("MODEL_KEY", upper)
         self.assertNotIn("GATEWAY_TOKEN", upper)
@@ -131,6 +130,15 @@ class ContainerImageTest(unittest.TestCase):
         self.assertIn("io.dola.unitag.template-identify", dockerfile)
         self.assertIn('"mode":"local"', dockerfile)
         self.assertIn('"auth":{"mode":"token"}', dockerfile)
+
+        build_script = (image_directory / "build-prebuilt-image.ps1").read_text(encoding="utf-8")
+        validation_script = (image_directory / "validate-prebuilt-image.ps1").read_text(encoding="utf-8")
+        publish_script = (image_directory / "publish-prebuilt-image.ps1").read_text(encoding="utf-8")
+        self.assertIn("validate-prebuilt-image.ps1", build_script)
+        self.assertIn("OPENCLAW_GATEWAY_TOKEN", validation_script)
+        self.assertIn("GatewayHttp=200", validation_script)
+        self.assertIn(".unitag-seed-initialized", validation_script)
+        self.assertIn("ImmutableReference=", publish_script)
 
     def test_seed_validation_rejects_config_and_profile_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:

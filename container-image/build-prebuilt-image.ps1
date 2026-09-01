@@ -1,8 +1,11 @@
 param(
     [Parameter(Mandatory = $true)][string]$TemplateIdentify,
     [Parameter(Mandatory = $true)][string]$ImageTag,
+    [string]$TemplateArchive,
     [string]$OpenClawVersion = "2026.7.1-1",
-    [string]$OpenClawImage = "ghcr.io/openclaw/openclaw@sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf"
+    [string]$OpenClawImage = "ghcr.io/openclaw/openclaw@sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf",
+    [string]$AgentManagerVersion = "0.5.0",
+    [string]$LayoutProtocolVersion = "2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,19 +13,51 @@ if ($TemplateIdentify -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $TemplateIden
     throw "TemplateIdentify must be one safe path segment"
 }
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$templateArchive = Join-Path $PSScriptRoot "templates/$TemplateIdentify.zip"
-if (-not (Test-Path -LiteralPath $templateArchive -PathType Leaf)) {
-    throw "Template archive not found: $templateArchive"
+$stagedArchive = Join-Path $PSScriptRoot "templates/$TemplateIdentify.zip"
+$sourceArchive = if ([string]::IsNullOrWhiteSpace($TemplateArchive)) { $stagedArchive } else { $TemplateArchive }
+if (-not (Test-Path -LiteralPath $sourceArchive -PathType Leaf)) {
+    throw "Template archive not found: $sourceArchive"
+}
+$sourceArchive = (Resolve-Path -LiteralPath $sourceArchive).Path
+if ([IO.Path]::GetExtension($sourceArchive) -ne ".zip" -or (Get-Item -LiteralPath $sourceArchive).Length -eq 0) {
+    throw "TemplateArchive must be a non-empty zip file"
 }
 
-docker buildx build `
-    --platform linux/amd64 `
-    --load `
-    --build-arg "OPENCLAW_IMAGE=$OpenClawImage" `
-    --build-arg "OPENCLAW_VERSION=$OpenClawVersion" `
-    --build-arg "TEMPLATE_IDENTIFY=$TemplateIdentify" `
-    --build-arg "AGENT_MANAGER_VERSION=0.5.0" `
-    --build-arg "LAYOUT_PROTOCOL_VERSION=1" `
-    --tag $ImageTag `
-    --file (Join-Path $PSScriptRoot "Dockerfile") `
-    $repoRoot
+$stagedFullPath = [IO.Path]::GetFullPath($stagedArchive)
+$mustStage = -not $sourceArchive.Equals($stagedFullPath, [StringComparison]::OrdinalIgnoreCase)
+$backupArchive = $null
+if ($mustStage) {
+    New-Item -ItemType Directory -Path (Split-Path $stagedFullPath) -Force | Out-Null
+    if (Test-Path -LiteralPath $stagedFullPath) {
+        $backupArchive = Join-Path ([IO.Path]::GetTempPath()) "$TemplateIdentify-$([Guid]::NewGuid().ToString('N')).zip"
+        Move-Item -LiteralPath $stagedFullPath -Destination $backupArchive
+    }
+    Copy-Item -LiteralPath $sourceArchive -Destination $stagedFullPath
+}
+
+try {
+    docker buildx build `
+        --platform linux/amd64 `
+        --load `
+        --build-arg "OPENCLAW_IMAGE=$OpenClawImage" `
+        --build-arg "OPENCLAW_VERSION=$OpenClawVersion" `
+        --build-arg "TEMPLATE_IDENTIFY=$TemplateIdentify" `
+        --build-arg "AGENT_MANAGER_VERSION=$AgentManagerVersion" `
+        --build-arg "LAYOUT_PROTOCOL_VERSION=$LayoutProtocolVersion" `
+        --tag $ImageTag `
+        --file (Join-Path $PSScriptRoot "Dockerfile") `
+        $repoRoot
+    if ($LASTEXITCODE -ne 0) { throw "Docker image build failed" }
+
+    & (Join-Path $PSScriptRoot "validate-prebuilt-image.ps1") `
+        -ImageReference $ImageTag `
+        -TemplateIdentify $TemplateIdentify `
+        -LayoutProtocolVersion $LayoutProtocolVersion
+    if ($LASTEXITCODE -ne 0) { throw "Prebuilt image runtime validation failed" }
+}
+finally {
+    if ($mustStage) {
+        if (Test-Path -LiteralPath $stagedFullPath) { Remove-Item -LiteralPath $stagedFullPath -Force }
+        if ($null -ne $backupArchive) { Move-Item -LiteralPath $backupArchive -Destination $stagedFullPath }
+    }
+}

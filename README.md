@@ -22,19 +22,23 @@ requires every declared Agent to already exist and never registers one implicitl
 The compatibility `create-instance` command uses the same internal registration and
 configuration stages and continues to register missing Agents.
 
-Build assets are under `container-image/`. Put the release archive at
-`container-image/templates/{templateIdentify}.zip`, then run:
+Build assets are under `container-image/`. The build command accepts the template
+zip directly and always runs the DockerManager-compatible runtime validator:
 
 ```powershell
 .\container-image\build-prebuilt-image.ps1 `
   -TemplateIdentify unipay-claw-base `
+  -TemplateArchive C:\artifacts\unipay-claw-base.zip `
   -ImageTag unitag/openclaw-unipay-claw-base:poc
 ```
 
 The build defaults to DockerManager's pinned OpenClaw `2026.7.1-1` digest and targets
 `linux/amd64`. A different immutable base can be supplied with `-OpenClawImage` and
-its corresponding label with `-OpenClawVersion`. At runtime, the entrypoint copies
-`/opt/unitag/openclaw-seed` into `/home/node/.openclaw` only for an empty volume.
+its corresponding label with `-OpenClawVersion`. At runtime, the entrypoint merges
+the secret-free `/opt/unitag/openclaw-seed` into `/home/node/.openclaw`; runtime
+configuration wins recursively, so DockerManager-owned settings are preserved.
+See `docs/prebuilt-agent-image.md` for publishing, labels, safety invariants, and
+troubleshooting.
 
 ## Container runtime (Execute v1)
 

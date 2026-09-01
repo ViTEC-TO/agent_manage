@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- 预制镜像 seed 支持与非空运行目录深度合并，保留 DockerManager 运行时配置，并通过 marker 保持幂等和中断恢复。
+- seed 默认写入无秘密的 `gateway.mode=local` 与 token auth 模式，使 Gateway 可在运行时 Token 环境变量下直接启动。
+- 镜像布局协议升级到 v2；构建脚本接受任意模板 zip，并强制执行真实 Gateway readiness、Agent、配置合并、Token 不落盘和 labels 验证。
+- 新增一键构建、验证、推送并输出 immutable digest 的发布脚本及操作文档。
+
 ## 0.5.0 - 2026-09-01
 
 - 新增 `add-agent` 与 `configure-instance`，将模板 Agent 预注册和订单运行时秘密配置分离；`create-instance` 保持兼容。
