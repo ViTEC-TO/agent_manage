@@ -21,7 +21,7 @@ RUN test -n "${TEMPLATE_IDENTIFY}"
 COPY container-image/templates/${TEMPLATE_IDENTIFY}.zip /home/node/template/${TEMPLATE_IDENTIFY}.zip
 RUN mkdir -p /opt/unitag/openclaw-seed \
     && mkdir -p /home/node/.openclaw \
-    && printf '{}\n' > /home/node/.openclaw/openclaw.json \
+    && printf '{"gateway":{"mode":"local","auth":{"mode":"token"}}}\n' > /home/node/.openclaw/openclaw.json \
     && chown -R node:node /home/node/template /home/node/.openclaw /opt/unitag/openclaw-seed
 
 USER node

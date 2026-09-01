@@ -129,6 +129,8 @@ class ContainerImageTest(unittest.TestCase):
         self.assertNotIn("AUTH_TOKEN", upper)
         self.assertIn("/opt/unitag/openclaw-seed", dockerfile)
         self.assertIn("io.dola.unitag.template-identify", dockerfile)
+        self.assertIn('"mode":"local"', dockerfile)
+        self.assertIn('"auth":{"mode":"token"}', dockerfile)
 
     def test_seed_validation_rejects_config_and_profile_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
