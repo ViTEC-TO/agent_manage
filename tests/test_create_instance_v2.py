@@ -355,7 +355,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             "providers": {"openai": {"models": [{"id": "gpt-image-2"}]}},
         }))
 
-    def test_provider_prefixed_model_id_is_normalized_once(self):
+    def test_provider_prefixed_model_id_is_preserved_from_catalog(self):
         manager = InstanceManagerV2(FakeRunner())
 
         result = manager._normalize_provider_catalog_models(
@@ -375,11 +375,11 @@ class CreateInstanceV2Test(unittest.TestCase):
             source_url=InstanceManagerV2.MODEL_CATALOG_URL,
         )
 
-        self.assertEqual(result["models"][0]["id"], "gpt-5.4")
+        self.assertEqual(result["models"][0]["id"], "dolaio/gpt-5.4")
         self.assertEqual(result["models"][0]["model_ref"], "dolaio/gpt-5.4")
         self.assertEqual(
             result["models_config"]["providers"]["dolaio"]["models"][0]["id"],
-            "gpt-5.4",
+            "dolaio/gpt-5.4",
         )
 
     def test_model_input_sanitizer_rejects_unknown_and_malformed_values(self):

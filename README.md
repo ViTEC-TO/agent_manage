@@ -78,6 +78,7 @@ python3 scripts/agentctl.py --version
   当前环境的 `.../aigateway/{shoppath}/v1` 格式；具体来源 provider 保留在
   `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
+- 模型目录返回的 `definition.id` 会原样保留：例如 `dolaio/gpt-5.6-sol` 不会被裁成 `gpt-5.6-sol`；官方模型返回无前缀 ID 时也不会自动补前缀
 - 普通模型目录只保留 `modelCategory = chat`；`image` 会进入独立的图片模型池，`video`、`chat-audio` 和其他非聊天分类不会进入普通模型列表
 - 图片生成模型固定为 `openai/gpt-image-2`，按 npm stable OpenClaw `2026.7.1-2` 的 schema 写入 `agents.defaults.imageGenerationModel.primary`；不会从目录选择或回退到其他图片模型
 - 如果当前商店目录的官方 provider `openai` 下包含 `gpt-image-2`，图片 provider 使用当前商店的 `baseUrl`；不要求目录额外提供 `modelCategory`
