@@ -263,12 +263,14 @@ class ModelManagementMixin:
                 raise ValueError(f"Model provider config must be an object: {provider_key}")
             provider["apiKey"] = model_key
             provider["baseUrl"] = fallback_base_url
+            if provider_key == self.OPENAI_MODEL_PROVIDER:
+                provider["api"] = "openai-responses"
 
         image_provider = providers.setdefault(
             self.IMAGE_MODEL_PROVIDER,
             {
                 "baseUrl": fallback_base_url,
-                "api": "openai-completions",
+                "api": "openai-responses",
                 "models": [],
             },
         )
@@ -276,7 +278,7 @@ class ModelManagementMixin:
             raise ValueError("OpenAI image provider config must be an object")
         image_provider["baseUrl"] = image_base_url or fallback_base_url
         image_provider["apiKey"] = model_key
-        image_provider.setdefault("api", "openai-completions")
+        image_provider["api"] = "openai-responses"
         definitions = image_provider.setdefault("models", [])
         if not isinstance(definitions, list):
             raise ValueError("OpenAI image provider models must be a list")
@@ -412,15 +414,11 @@ class ModelManagementMixin:
                 model_id = definition.get("id")
                 if not isinstance(model_id, str) or not model_id.strip():
                     continue
-                model_id = self._normalize_provider_model_id(
-                    provider_name,
-                    model_id,
-                )
                 models.append(
                     {
                         "id": model_id,
                         "provider": provider_name,
-                        "model_ref": f"{provider_name}/{model_id}",
+                        "model_ref": self._model_ref(provider_name, model_id),
                         "definition": definition,
                     }
                 )
@@ -498,12 +496,6 @@ class ModelManagementMixin:
                     sanitized_definition = self._sanitize_openclaw_model_definition(
                         definition
                     )
-                    model_id = sanitized_definition.get("id")
-                    if isinstance(model_id, str) and model_id.strip():
-                        sanitized_definition["id"] = self._normalize_provider_model_id(
-                            provider_name,
-                            model_id,
-                        )
                     if sanitized_definition:
                         sanitized_definitions.append(sanitized_definition)
                 sanitized_provider["models"] = sanitized_definitions
@@ -513,16 +505,16 @@ class ModelManagementMixin:
         sanitized["providers"] = sanitized_providers
         return sanitized
 
-    def _normalize_provider_model_id(self, provider_name: str, model_id: str) -> str:
-        normalized = model_id.strip()
+    def _model_ref(self, provider_name: str, model_id: str) -> str:
+        """Build a selectable ref without changing the catalog's model id."""
+
         prefix = f"{provider_name}/"
-        while normalized.startswith(prefix):
-            normalized = normalized[len(prefix) :]
-        if not normalized:
-            raise ValueError(
-                f"Model id must not contain only the provider prefix: {model_id}"
-            )
-        return normalized
+        return model_id if model_id.startswith(prefix) else f"{provider_name}/{model_id}"
+
+    def _model_id_for_matching(self, model_id: str) -> str:
+        """Return a comparison-only id while preserving the catalog value elsewhere."""
+
+        return model_id.rsplit("/", 1)[-1]
 
     def _sanitize_openclaw_model_definition(self, definition: Dict[str, object]) -> Dict[str, object]:
         sanitized = {
@@ -588,12 +580,12 @@ class ModelManagementMixin:
             return preferred_model_ref
         for model_id in self.PREFERRED_PRIMARY_MODEL_IDS:
             for item in supported_models:
-                if item["id"] == model_id:
+                if self._model_id_for_matching(str(item["id"])) == model_id:
                     return item["model_ref"]
         return supported_models[0]["model_ref"]
 
     def _supported_model_sort_key(self, item: Dict[str, object]) -> tuple[int, str]:
-        model_id = item["id"]
+        model_id = self._model_id_for_matching(str(item["id"]))
         try:
             index = self.PREFERRED_PRIMARY_MODEL_IDS.index(model_id)
         except ValueError:
@@ -619,8 +611,7 @@ class ModelManagementMixin:
                 model_id = item.get("id")
                 if not isinstance(model_id, str) or not model_id.strip():
                     continue
-                model_id = model_id.strip()
-                model_ref = f"{provider_name}/{model_id}"
+                model_ref = self._model_ref(provider_name, model_id)
                 if model_ref in excluded_media_refs:
                     continue
                 models.append(

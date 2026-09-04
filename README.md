@@ -149,10 +149,12 @@ python3 scripts/agentctl.py --version
   当前环境的 `.../aigateway/{shoppath}/v1` 格式；具体来源 provider 保留在
   `dolaio/gpt-5.5` 这样的模型引用里，不再写进 URL 路径
 - 如果模型目录已经返回 `content.models.providers`，会按 OpenClaw 配置 schema 过滤后写入这些 providers，并用 `--model-key` 覆盖每个 provider 的 `apiKey`
+- 模型目录返回的 `definition.id` 会原样保留：例如 `dolaio/gpt-5.6-sol` 不会被裁成 `gpt-5.6-sol`；官方模型返回无前缀 ID 时也不会自动补前缀
 - 普通模型目录只保留 `modelCategory = chat`；`image` 会进入独立的图片模型池，`video`、`chat-audio` 和其他非聊天分类不会进入普通模型列表
 - 图片生成模型固定为 `openai/gpt-image-2`，按 npm stable OpenClaw `2026.7.1-2` 的 schema 写入 `agents.defaults.imageGenerationModel.primary`；不会从目录选择或回退到其他图片模型
 - 如果当前商店目录的官方 provider `openai` 下包含 `gpt-image-2`，图片 provider 使用当前商店的 `baseUrl`；不要求目录额外提供 `modelCategory`
 - 如果当前商店没有官方 `openai/gpt-image-2`，图片使用的 `openai` provider 特例回退到同环境的 `/aigateway/v1`，不添加 `test` 路径；其他 provider 仍使用当前商店 `baseUrl`
+- provider ID 为 `openai` 时固定使用 OpenClaw 的 `openai-responses` API 适配器；其他 OpenAI-compatible provider 保留模型目录声明的 API 类型，默认回退仍为 `openai-completions`
 - 初始化会向各 agent workspace 的 `AGENTS.md` 写入精简的受管运行规则，包括命令安全、IPv4 公网附件、`nginx-delivery` 交付要求和图片默认质量；`image_generate` 默认使用 `quality: "low"`，可通过 `--image-quality low|medium|high|auto` 调整
 - 内置公共 Skill 会同步到 `~/.openclaw/skills/`；当前包含 `nginx-delivery`，用于将明确公开的交付文件、网页和静态资源部署到 nginx、更新索引并返回经过 IPv4 验证的公网 URL
 - 模型 `input` 只会写入 npm stable OpenClaw `2026.7.1-2` 支持的 `text`、`image`；`video`、`audio` 和未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
