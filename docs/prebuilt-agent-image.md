@@ -80,3 +80,16 @@ Use the printed `ImmutableReference`, not the mutable tag, as DockerManager's
 - Lark CLI postinstall timeout: the Dockerfile uses a cacheable BuildKit download with a fixed SHA-256 and verifies the package-provided checksum again.
 - Registry pull failure: verify the repository allowlist, registry credentials, and immutable digest.
 - Never repair a failed image by adding secrets during build. Fix the seed contract and publish a new digest.
+# Container nginx runtime
+
+The prebuilt image installs nginx once during `docker build`; container startup never installs packages and does not require systemd. PID 1 remains the Unitag Python supervisor, which initializes the OpenClaw seed, validates nginx, starts nginx and OpenClaw, forwards `SIGTERM`/`SIGINT`, and terminates the peer process when either child exits.
+
+- Persistent platform-managed config: `/home/node/.openclaw/nginx/nginx.conf`
+- Public files only: `/home/node/.openclaw/workspace/public/`
+- Ephemeral pid, logs, cache and temporary data: `/tmp/nginx/`
+- Default container port: `80`
+- Optional fallback: set `UNITAG_NGINX_PORT` on the first start of a fresh state volume, for example `8080`. The persisted config must continue to match that value on later starts.
+
+The supervisor rejects extra includes, `alias`, `proxy_pass`, FastCGI, gRPC, uWSGI, SCGI, dynamic modules and any document root other than the public directory. DockerManager must continue to run the image as `node`, with all capabilities dropped and `no-new-privileges`; it must publish only the configured nginx port rather than arbitrary container ports.
+
+This is a controlled serving policy, not a hard security boundary against hostile code running as the same Unix user. A same-UID OpenClaw tool can replace writable state or bind an exposed port. Hard tenant isolation still belongs at the container boundary: immutable image, fixed published ports, no Docker socket, no added capabilities, and host/network policy. Do not grant `NET_ADMIN`, `NET_BIND_SERVICE`, `privileged`, or a writable host nginx configuration mount.

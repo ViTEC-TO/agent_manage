@@ -9,7 +9,10 @@ param(
     [string]$LarkSuiteCliVersion = "1.0.93",
     [string]$WeixinPluginVersion = "2.4.8",
     [string]$QqBotPluginVersion = "2026.7.1",
-    [string]$FeishuPluginVersion = "2026.7.1"
+    [string]$FeishuPluginVersion = "2026.7.1",
+    [int]$NginxPort = 80,
+    [string]$DebianMirror = "http://deb.debian.org/debian",
+    [string]$DebianSecurityMirror = "http://deb.debian.org/debian-security"
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,6 +55,9 @@ try {
         --build-arg "WEIXIN_PLUGIN_VERSION=$WeixinPluginVersion" `
         --build-arg "QQBOT_PLUGIN_VERSION=$QqBotPluginVersion" `
         --build-arg "FEISHU_PLUGIN_VERSION=$FeishuPluginVersion" `
+        --build-arg "NGINX_PORT=$NginxPort" `
+        --build-arg "DEBIAN_MIRROR=$DebianMirror" `
+        --build-arg "DEBIAN_SECURITY_MIRROR=$DebianSecurityMirror" `
         --tag $ImageTag `
         --file (Join-Path $PSScriptRoot "Dockerfile") `
         $repoRoot
@@ -60,7 +66,8 @@ try {
     & (Join-Path $PSScriptRoot "validate-prebuilt-image.ps1") `
         -ImageReference $ImageTag `
         -TemplateIdentify $TemplateIdentify `
-        -LayoutProtocolVersion $LayoutProtocolVersion
+        -LayoutProtocolVersion $LayoutProtocolVersion `
+        -NginxPort $NginxPort
     if ($LASTEXITCODE -ne 0) { throw "Prebuilt image runtime validation failed" }
 }
 finally {
