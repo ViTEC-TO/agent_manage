@@ -6,7 +6,11 @@ param(
     [string]$OpenClawVersion = "2026.7.1-1",
     [string]$OpenClawImage = "ghcr.io/openclaw/openclaw@sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf",
     [string]$AgentManagerVersion = "0.5.0",
-    [string]$LayoutProtocolVersion = "2"
+    [string]$LayoutProtocolVersion = "2",
+    [string]$LarkSuiteCliVersion = "1.0.93",
+    [string]$WeixinPluginVersion = "2.4.8",
+    [string]$QqBotPluginVersion = "2026.7.1",
+    [string]$FeishuPluginVersion = "2026.7.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +24,11 @@ $tag = "${RegistryRepository}:${TemplateIdentify}-${Version}-amd64"
     -OpenClawVersion $OpenClawVersion `
     -OpenClawImage $OpenClawImage `
     -AgentManagerVersion $AgentManagerVersion `
-    -LayoutProtocolVersion $LayoutProtocolVersion
+    -LayoutProtocolVersion $LayoutProtocolVersion `
+    -LarkSuiteCliVersion $LarkSuiteCliVersion `
+    -WeixinPluginVersion $WeixinPluginVersion `
+    -QqBotPluginVersion $QqBotPluginVersion `
+    -FeishuPluginVersion $FeishuPluginVersion
 if ($LASTEXITCODE -ne 0) { throw "Build or validation failed; image was not pushed" }
 
 docker push $tag

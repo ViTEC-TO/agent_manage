@@ -130,6 +130,14 @@ class ContainerImageTest(unittest.TestCase):
         self.assertIn("io.dola.unitag.template-identify", dockerfile)
         self.assertIn('"mode":"local"', dockerfile)
         self.assertIn('"auth":{"mode":"token"}', dockerfile)
+        self.assertIn('npm install -g "@larksuite/cli@${LARKSUITE_CLI_VERSION}"', dockerfile)
+        self.assertIn("checksums.txt", dockerfile)
+        self.assertIn("sha256sum --check --strict", dockerfile)
+        self.assertIn('openclaw plugins install "@tencent-weixin/openclaw-weixin@${WEIXIN_PLUGIN_VERSION}"', dockerfile)
+        self.assertIn('openclaw plugins install "@openclaw/qqbot@${QQBOT_PLUGIN_VERSION}"', dockerfile)
+        self.assertIn('openclaw plugins install "@openclaw/feishu@${FEISHU_PLUGIN_VERSION}"', dockerfile)
+        self.assertIn("openclaw config set tools.agentToAgent.enabled true --strict-json", dockerfile)
+        self.assertIn("openclaw config set update.checkOnStart false", dockerfile)
 
         build_script = (image_directory / "build-prebuilt-image.ps1").read_text(encoding="utf-8")
         validation_script = (image_directory / "validate-prebuilt-image.ps1").read_text(encoding="utf-8")
@@ -137,8 +145,15 @@ class ContainerImageTest(unittest.TestCase):
         self.assertIn("validate-prebuilt-image.ps1", build_script)
         self.assertIn("OPENCLAW_GATEWAY_TOKEN", validation_script)
         self.assertIn("GatewayHttp=200", validation_script)
+        self.assertIn("@larksuite/cli", validation_script)
+        self.assertIn("ExtensionsConfigured=true", validation_script)
         self.assertIn(".unitag-seed-initialized", validation_script)
         self.assertIn("ImmutableReference=", publish_script)
+
+        seed_module = (Path(__file__).resolve().parents[1] / "agent_manage" / "seed.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("dirs_exist_ok=True, symlinks=True", seed_module)
 
     def test_seed_validation_rejects_config_and_profile_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:

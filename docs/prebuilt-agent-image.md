@@ -12,8 +12,13 @@ the writable OpenClaw volume is mounted.
 - `/opt/unitag/openclaw-seed` contains the registered template Agent and no runtime secrets.
 - Seed config contains `gateway.mode=local` and `gateway.auth.mode=token`, but no token value.
 - The entrypoint merges seed config as defaults and lets runtime config win recursively.
+- Seed initialization preserves npm symbolic links required by installed plugins.
 - `.unitag-seed-initialized` makes initialization idempotent; an initializing marker supports recovery.
 - Gateway Token, model key, permission ticket, channel credentials, and auth profiles are runtime-only.
+- `@larksuite/cli` and the Weixin, QQ Bot, and Feishu plugins are installed at image build time.
+- CLI and plugin versions are pinned by Docker build arguments and recorded as image labels.
+- OpenClaw-owned plugins are pinned to the base runtime version so their plugin API remains compatible.
+- The seed enables Weixin, agent-to-agent access, all-session visibility, unrestricted subagents, and disables update checks.
 - Layout protocol label `io.dola.unitag.layout-protocol-version=2` identifies this contract.
 
 These rules address two real failure modes: skipping seed when DockerManager has
@@ -39,6 +44,7 @@ non-empty tmpfs OpenClaw directory and a runtime-only test token, then requires:
 - The runtime control-UI origin survives the seed merge.
 - Gateway mode is `local` and auth mode is `token`.
 - The runtime token is not persisted in `openclaw.json`.
+- `@larksuite/cli` is globally installed and the required plugin/tool settings survive seed initialization.
 - The initialized marker and image labels are correct.
 
 The image is not pushed when validation fails.
@@ -71,5 +77,6 @@ Use the printed `ImmutableReference`, not the mutable tag, as DockerManager's
 - `Prebuilt agent is missing`: verify layout protocol v2 and run the validator.
 - `existing config is missing gateway.mode`: the image predates the bootable seed contract; rebuild it.
 - Gateway readiness timeout: inspect container logs before retrying; do not fall back silently to the base image.
+- Lark CLI postinstall timeout: the Dockerfile uses a cacheable BuildKit download with a fixed SHA-256 and verifies the package-provided checksum again.
 - Registry pull failure: verify the repository allowlist, registry credentials, and immutable digest.
 - Never repair a failed image by adding secrets during build. Fix the seed contract and publish a new digest.

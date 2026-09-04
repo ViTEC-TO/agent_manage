@@ -96,7 +96,7 @@ def initialize_openclaw_seed(seed_dir: Path, target_dir: Path) -> dict[str, obje
                 continue
             destination = target_dir / source.name
             if source.is_dir():
-                shutil.copytree(source, destination, dirs_exist_ok=True)
+                shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
             else:
                 shutil.copy2(source, destination)
             copied.append(source.name)

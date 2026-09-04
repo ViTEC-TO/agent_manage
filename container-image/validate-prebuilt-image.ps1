@@ -16,6 +16,9 @@ $labels = $inspection[0].Config.Labels
 if ($labels.'io.dola.unitag.template-identify' -ne $TemplateIdentify) { throw "Template label mismatch" }
 if ($labels.'io.dola.unitag.layout-protocol-version' -ne $LayoutProtocolVersion) { throw "Layout protocol label mismatch" }
 
+docker run --rm --entrypoint npm $ImageReference list --global --depth=0 '@larksuite/cli'
+if ($LASTEXITCODE -ne 0) { throw "@larksuite/cli is missing from the image" }
+
 $containerName = "unitag-prebuilt-validation-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
 $runtimeToken = "unitag-runtime-validation-token"
 $started = $false
@@ -24,7 +27,6 @@ $portListener.Start()
 $hostPort = $portListener.LocalEndpoint.Port
 $portListener.Stop()
 $startupScript = @'
-printf '%s\n' '{"gateway":{"controlUi":{"allowedOrigins":["https://validation.invalid"]}}}' > /home/node/.openclaw/openclaw.json
 exec /usr/local/bin/unitag-openclaw-entrypoint node openclaw.mjs gateway --bind lan
 '@
 
@@ -59,6 +61,19 @@ try {
         Start-Sleep -Seconds 2
     } while ($true)
 
+    $runtimeConfigCode = @'
+import json
+from pathlib import Path
+path = Path("/home/node/.openclaw/openclaw.json")
+config = json.loads(path.read_text())
+control_ui = config.setdefault("gateway", {}).setdefault("controlUi", {})
+control_ui["allowedOrigins"] = ["https://validation.invalid"]
+path.write_text(json.dumps(config))
+'@
+    & docker exec $containerName python3 -c $runtimeConfigCode
+    if ($LASTEXITCODE -ne 0) { throw "Unable to apply runtime configuration to validation container" }
+    Start-Sleep -Seconds 2
+
     $validationCode = @'
 import json
 from pathlib import Path
@@ -67,13 +82,19 @@ assert config["gateway"]["mode"] == "local"
 assert config["gateway"]["auth"]["mode"] == "token"
 assert config["gateway"]["controlUi"]["allowedOrigins"] == ["https://validation.invalid"]
 assert any(agent.get("id") == "__TEMPLATE_IDENTIFY__" for agent in config["agents"]["list"])
+assert config["plugins"]["entries"]["openclaw-weixin"]["enabled"] is True
+assert config["tools"]["agentToAgent"]["enabled"] is True
+assert config["tools"]["agentToAgent"]["allow"] == []
+assert config["tools"]["sessions"]["visibility"] == "all"
+assert config["agents"]["defaults"]["subagents"]["allowAgents"] == ["*"]
+assert config["update"]["checkOnStart"] is False
 assert not config["gateway"]["auth"].get("token")
 assert Path("/home/node/.openclaw/.unitag-seed-initialized").is_file()
 '@.Replace("__TEMPLATE_IDENTIFY__", $TemplateIdentify)
     & docker exec $containerName python3 -c $validationCode
     if ($LASTEXITCODE -ne 0) { throw "Seed/runtime configuration validation failed" }
     Write-Output "Validated prebuilt image: $ImageReference"
-    Write-Output "TemplateIdentify=$TemplateIdentify LayoutProtocolVersion=$LayoutProtocolVersion GatewayHttp=200"
+    Write-Output "TemplateIdentify=$TemplateIdentify LayoutProtocolVersion=$LayoutProtocolVersion GatewayHttp=200 ExtensionsConfigured=true"
 }
 finally {
     if ($started) { docker rm --force $containerName | Out-Null }
