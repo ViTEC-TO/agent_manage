@@ -40,7 +40,8 @@ class ManagerCore:
     WEIXIN_PLUGIN_PACKAGE = "@tencent-weixin/openclaw-weixin"
     WEIXIN_DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
     MANAGED_MODEL_PROVIDER = "unipay-fun"
-    IMAGE_MODEL_PROVIDER = "openai"
+    OPENAI_MODEL_PROVIDER = "openai"
+    IMAGE_MODEL_PROVIDER = OPENAI_MODEL_PROVIDER
     IMAGE_MODEL_ID = "gpt-image-2"
     IMAGE_MODEL_REF = "openai/gpt-image-2"
     IMAGE_GENERATION_POLICY_START = "<!-- agent_manage:image-generation-policy:start -->"

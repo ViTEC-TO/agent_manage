@@ -355,7 +355,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             "providers": {"openai": {"models": [{"id": "gpt-image-2"}]}},
         }))
 
-    def test_provider_prefixed_model_id_is_normalized_once(self):
+    def test_provider_prefixed_model_id_is_preserved_from_catalog(self):
         manager = InstanceManagerV2(FakeRunner())
 
         result = manager._normalize_provider_catalog_models(
@@ -375,11 +375,11 @@ class CreateInstanceV2Test(unittest.TestCase):
             source_url=InstanceManagerV2.MODEL_CATALOG_URL,
         )
 
-        self.assertEqual(result["models"][0]["id"], "gpt-5.4")
+        self.assertEqual(result["models"][0]["id"], "dolaio/gpt-5.4")
         self.assertEqual(result["models"][0]["model_ref"], "dolaio/gpt-5.4")
         self.assertEqual(
             result["models_config"]["providers"]["dolaio"]["models"][0]["id"],
-            "gpt-5.4",
+            "dolaio/gpt-5.4",
         )
 
     def test_model_input_sanitizer_rejects_unknown_and_malformed_values(self):
@@ -469,6 +469,35 @@ class CreateInstanceV2Test(unittest.TestCase):
             result["providers"][manager.MANAGED_MODEL_PROVIDER]["models"][0]["input"],
             ["text"],
         )
+        self.assertEqual(
+            result["providers"][manager.IMAGE_MODEL_PROVIDER]["api"],
+            "openai-responses",
+        )
+
+    def test_models_config_uses_responses_api_only_for_openai_provider(self):
+        manager = InstanceManagerV2(FakeRunner())
+
+        result = manager._models_config_with_api_key(
+            model_key="test-key",
+            models_config={
+                "mode": "merge",
+                "providers": {
+                    "openai": {
+                        "api": "openai-completions",
+                        "models": [{"id": "gpt-5.6-luna", "reasoning": True}],
+                    },
+                    "dolaio": {
+                        "api": "openai-completions",
+                        "models": [{"id": "deepseek-v4-flash", "reasoning": True}],
+                    },
+                },
+            },
+            fallback_base_url="https://example.com/v1",
+            supported_models=[],
+        )
+
+        self.assertEqual(result["providers"]["openai"]["api"], "openai-responses")
+        self.assertEqual(result["providers"]["dolaio"]["api"], "openai-completions")
 
     def test_generated_model_config_validates_with_installed_openclaw(self):
         openclaw_bin = shutil.which("openclaw")
@@ -664,6 +693,10 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(
             saved_config["models"]["providers"]["openai"]["baseUrl"],
             f"{TEST_GATEWAY_ORIGIN}/aigateway/v1",
+        )
+        self.assertEqual(
+            saved_config["models"]["providers"]["openai"]["api"],
+            "openai-responses",
         )
         self.assertEqual(
             saved_config["models"]["providers"]["openai"]["models"][0]["id"],
