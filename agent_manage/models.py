@@ -13,6 +13,7 @@ class CreateInstanceRequest:
     ai_shop: str = DEFAULT_AI_SHOP
     model: str | None = None
     image_quality: str = DEFAULT_IMAGE_QUALITY
+    base_url: str | None = None
     workspace_root: str = "~/data"
     rollback_on_fail: bool = True
     agent_zip: str | None = None
@@ -31,6 +32,7 @@ class AddAgentRequest:
 class AddAgentsRequest:
     agents: list[AddAgentRequest]
     workspace_root: str = "~/data"
+    base_url: str | None = None
 
 
 @dataclass

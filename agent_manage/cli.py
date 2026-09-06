@@ -58,10 +58,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_agent.add_argument("--agent-name")
     add_agent.add_argument("--workspace-root")
     add_agent.add_argument("--model")
+    add_agent.add_argument("--base-url")
 
     add_agents = subparsers.add_parser("add-agents")
     add_agents.add_argument("--agents", required=True)
     add_agents.add_argument("--workspace-root", default="~/data")
+    add_agents.add_argument("--base-url")
 
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
@@ -158,6 +160,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ai_shop=args.ai_shop,
                 model=args.model,
                 image_quality=args.image_quality,
+                base_url=args.base_url,
                 workspace_root=args.workspace_root
                 or (
                     InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
@@ -186,6 +189,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     else "~/data"
                 ),
                 model=args.model,
+                base_url=args.base_url,
             )
             print_json(_success_response(result, client))
             return 0
@@ -199,6 +203,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if container_runtime
                         else "~/data"
                     ),
+                    base_url=args.base_url,
                 )
             )
             print_json(_success_response(result, client))
@@ -409,6 +414,7 @@ def _add_instance_arguments(parser) -> None:
         choices=IMAGE_QUALITY_CHOICES,
         default=DEFAULT_IMAGE_QUALITY,
     )
+    parser.add_argument("--base-url")
     parser.add_argument("--workspace-root")
     parser.add_argument("--no-rollback", action="store_true")
 

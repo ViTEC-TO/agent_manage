@@ -13,7 +13,7 @@ from .manager_core import ManagerCore
 from .model_management import ModelManagementMixin
 from .models import AddAgentRequest, AddAgentsRequest, CreateInstanceRequest
 from .provisioning import ProvisioningMixin
-from .settings import normalize_image_quality, normalize_shop
+from .settings import normalize_image_quality, normalize_public_base_url, normalize_shop
 
 
 class InstanceManagerV2(
@@ -40,6 +40,7 @@ class InstanceManagerV2(
         agent_name: str | None = None,
         workspace_root: str = "~/data",
         model: str | None = None,
+        base_url: str | None = None,
     ) -> Dict[str, object]:
         """Register a template's primary and manifest-declared agents."""
         resolved_agent_name = (agent_name or template_name).strip()
@@ -53,6 +54,7 @@ class InstanceManagerV2(
                     )
                 ],
                 workspace_root=workspace_root,
+                base_url=base_url,
             )
         )
 
@@ -90,6 +92,7 @@ class InstanceManagerV2(
         model_gateway = self._model_gateway_for_env(request.model_env)
         ai_shop = normalize_shop(request.ai_shop)
         image_quality = normalize_image_quality(request.image_quality)
+        public_base_url = normalize_public_base_url(request.base_url)
         model_key = request.model_key.strip()
         agent_name = self.resolve_agent_name(request)
         workspace = self.default_workspace(agent_name, request.workspace_root)
@@ -234,6 +237,7 @@ class InstanceManagerV2(
                 lambda: self._configure_workspace_defaults(
                     [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
                     quality=image_quality,
+                    base_url=public_base_url,
                 ),
             )
 
@@ -251,6 +255,7 @@ class InstanceManagerV2(
                 "ai_shop": ai_shop,
                 "image_model": self.IMAGE_MODEL_REF,
                 "image_quality": image_quality,
+                "base_url": public_base_url,
                 "gateway_token": gateway_token,
                 "gateway_token_preserved": gateway_token_preserved,
                 "workspace": str(workspace),
@@ -310,6 +315,7 @@ class InstanceManagerV2(
         model_gateway = self._model_gateway_for_env(request.model_env)
         ai_shop = normalize_shop(request.ai_shop)
         image_quality = normalize_image_quality(request.image_quality)
+        public_base_url = normalize_public_base_url(request.base_url)
         model_key = request.model_key.strip()
         agent_name = self.resolve_agent_name(request)
         workspace_root = request.workspace_root or self.LOCAL_WORKSPACE_ROOT
@@ -426,6 +432,7 @@ class InstanceManagerV2(
                 lambda: self._configure_workspace_defaults(
                     [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
                     quality=image_quality,
+                    base_url=public_base_url,
                 ),
             )
 
@@ -439,6 +446,7 @@ class InstanceManagerV2(
                 "ai_shop": ai_shop,
                 "image_model": self.IMAGE_MODEL_REF,
                 "image_quality": image_quality,
+                "base_url": public_base_url,
                 "gateway_auth": gateway_auth_result,
                 "workspace": str(workspace),
                 "workspace_root": str(Path(workspace_root).expanduser().resolve()),
@@ -531,6 +539,7 @@ class InstanceManagerV2(
     def add_agents(self, request: AddAgentsRequest) -> Dict[str, object]:
         if not request.agents:
             raise ValueError("agents is required")
+        public_base_url = normalize_public_base_url(request.base_url)
 
         steps: List[Dict[str, object]] = []
         agent_results: List[Dict[str, object]] = []
@@ -657,6 +666,7 @@ class InstanceManagerV2(
             lambda: self._configure_workspace_defaults(
                 [Path(str(item["workspace"])) for item in agent_results],
                 quality="low",
+                base_url=public_base_url,
             ),
         )
 
@@ -667,6 +677,7 @@ class InstanceManagerV2(
             "skipped_count": skipped_count,
             "restart_required": False,
             "post_batch_actions": [],
+            "base_url": public_base_url,
             "tools_config": tools_result,
             "workspace_defaults": workspace_defaults,
             "agents": agent_results,

@@ -653,9 +653,14 @@ class ProvisioningMixin:
         workspaces: List[Path],
         *,
         quality: str,
+        base_url: str | None = None,
     ) -> Dict[str, object]:
         skills_result = self._install_common_skills(self._builtin_common_skill_sources())
-        policy_result = self._configure_runtime_policy(workspaces, quality=quality)
+        policy_result = self._configure_runtime_policy(
+            workspaces,
+            quality=quality,
+            base_url=base_url,
+        )
         return {
             **policy_result,
             "common_skills": skills_result,
@@ -666,14 +671,26 @@ class ProvisioningMixin:
         workspaces: List[Path],
         *,
         quality: str,
+        base_url: str | None = None,
     ) -> Dict[str, object]:
         resolved_quality = normalize_image_quality(quality)
+
+        public_url_rules = []
+        if base_url:
+            public_url_rules = [
+                f"- This host's public file base URL is `{base_url}`.",
+                "- When using `MEDIA:`, first publish the local file under "
+                f"`/var/www/html/`, then return its corresponding public URL as "
+                f"`MEDIA:{base_url}<relative-path>`. Never use a local filesystem path, "
+                "`localhost`, a loopback address, or an IPv6-only URL in `MEDIA:`.",
+            ]
 
         policy_block = "\n".join(
             [
                 self.RUNTIME_POLICY_START,
                 "## Runtime rules",
                 "",
+                *public_url_rules,
                 "- Preserve existing and unrelated changes; make only necessary changes and avoid destructive or system-wide actions unless explicitly authorized.",
                 "- Run blocking commands separately with timeouts; bound network retries, prefer IPv4, and diagnose or change approach after two failures for the same reason.",
                 "- Never claim unperformed verification; report validation gaps and risks, and inspect final diffs for temporary files, debug code, secrets, or unintended changes.",
@@ -717,6 +734,7 @@ class ProvisioningMixin:
             configured.append(str(policy_path))
         return {
             "quality": resolved_quality,
+            "base_url": base_url,
             "policy_files": configured,
         }
 

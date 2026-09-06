@@ -44,6 +44,27 @@ class CliResponseTest(unittest.TestCase):
             agent_name="primary",
             workspace_root="/data",
             model=None,
+            base_url=None,
+        )
+
+    def test_agent_manage_add_agent_accepts_base_url(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {"ok": True}
+            with redirect_stdout(io.StringIO()):
+                exit_code = agent_manage_main(
+                    [
+                        "add-agent",
+                        "--template-name",
+                        "team",
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            manager_cls.return_value.add_agent.call_args.kwargs["base_url"],
+            "https://server-001.web.dolaio.cn/",
         )
 
     def test_agent_manage_configure_instance_dispatches_without_create(self):
@@ -58,11 +79,15 @@ class CliResponseTest(unittest.TestCase):
                         "base",
                         "--model-key",
                         "runtime-secret",
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
                     ]
                 )
 
         self.assertEqual(exit_code, 0)
         manager_cls.return_value.configure_instance.assert_called_once()
+        request = manager_cls.return_value.configure_instance.call_args.args[0]
+        self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
         manager_cls.return_value.create_instance.assert_not_called()
 
     def test_embedded_failure_response_preserves_total_elapsed_ms(self):
@@ -246,6 +271,31 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(request.image_quality, "low")
 
+    def test_agent_manage_create_instance_accepts_base_url(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.create_instance.return_value = {
+                "ok": True,
+                "agent_name": "base",
+            }
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "create-instance",
+                        "--template-name",
+                        "base",
+                        "--model-key",
+                        "test-key",
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
+                    ]
+                )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
+
     def test_agent_manage_create_instance_accepts_local_agent_zip(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
             manager_cls.return_value.create_instance.return_value = {
@@ -308,6 +358,8 @@ class CliResponseTest(unittest.TestCase):
                         "add-agents",
                         "--agents",
                         '[\"base\", {\"agent_name\": \"demo\", \"model\": \"openai/gpt-5\"}]',
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
                     ]
                 )
 
@@ -318,6 +370,7 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(request.agents[0].agent_name, "base")
         self.assertEqual(request.agents[1].agent_name, "demo")
         self.assertEqual(request.agents[1].model, "openai/gpt-5")
+        self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
         self.assertEqual(payload["result"]["added_count"], 2)
 
     def test_agent_manage_add_agents_parses_optional_template_name(self):
