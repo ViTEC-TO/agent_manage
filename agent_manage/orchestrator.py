@@ -12,7 +12,7 @@ from .manager_core import ManagerCore
 from .model_management import ModelManagementMixin
 from .models import AddAgentsRequest, CreateInstanceRequest
 from .provisioning import ProvisioningMixin
-from .settings import normalize_image_quality, normalize_shop
+from .settings import normalize_image_quality, normalize_public_base_url, normalize_shop
 
 
 class InstanceManagerV2(
@@ -35,6 +35,7 @@ class InstanceManagerV2(
         model_gateway = self._model_gateway_for_env(request.model_env)
         ai_shop = normalize_shop(request.ai_shop)
         image_quality = normalize_image_quality(request.image_quality)
+        public_base_url = normalize_public_base_url(request.base_url)
         model_key = request.model_key.strip()
         steps: List[Dict[str, object]] = []
         agent_name = self.resolve_agent_name(request)
@@ -165,6 +166,7 @@ class InstanceManagerV2(
                 lambda: self._configure_workspace_defaults(
                     [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
                     quality=image_quality,
+                    base_url=public_base_url,
                 ),
             )
 
@@ -178,6 +180,7 @@ class InstanceManagerV2(
                 "ai_shop": ai_shop,
                 "image_model": self.IMAGE_MODEL_REF,
                 "image_quality": image_quality,
+                "base_url": public_base_url,
                 "gateway_token": gateway_token,
                 "gateway_token_preserved": gateway_token_preserved,
                 "workspace": str(workspace),
@@ -228,6 +231,7 @@ class InstanceManagerV2(
         model_gateway = self._model_gateway_for_env(request.model_env)
         ai_shop = normalize_shop(request.ai_shop)
         image_quality = normalize_image_quality(request.image_quality)
+        public_base_url = normalize_public_base_url(request.base_url)
         model_key = request.model_key.strip()
         steps: List[Dict[str, object]] = []
         agent_name = self.resolve_agent_name(request)
@@ -340,6 +344,7 @@ class InstanceManagerV2(
                 lambda: self._configure_workspace_defaults(
                     [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
                     quality=image_quality,
+                    base_url=public_base_url,
                 ),
             )
 
@@ -353,6 +358,7 @@ class InstanceManagerV2(
                 "ai_shop": ai_shop,
                 "image_model": self.IMAGE_MODEL_REF,
                 "image_quality": image_quality,
+                "base_url": public_base_url,
                 "gateway_auth": gateway_auth_result,
                 "workspace": str(workspace),
                 "workspace_root": str(Path(workspace_root).expanduser().resolve()),

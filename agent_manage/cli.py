@@ -64,6 +64,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         choices=IMAGE_QUALITY_CHOICES,
         default=DEFAULT_IMAGE_QUALITY,
     )
+    create_instance.add_argument("--base-url")
     create_instance.add_argument("--workspace-root")
     create_instance.add_argument("--no-rollback", action="store_true")
 
@@ -155,6 +156,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     ai_shop=args.ai_shop,
                     model=args.model,
                     image_quality=args.image_quality,
+                    base_url=args.base_url,
                     workspace_root=args.workspace_root
                     or ("~/.openclaw/data" if args.local else "~/data"),
                     rollback_on_fail=not args.no_rollback,

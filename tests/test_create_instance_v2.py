@@ -105,7 +105,7 @@ class FailingPopulateManager(InstanceManagerV2):
 
 
 class FailingWorkspaceDefaultsManager(InstanceManagerV2):
-    def _configure_workspace_defaults(self, workspaces, *, quality):
+    def _configure_workspace_defaults(self, workspaces, *, quality, base_url=None):
         raise RuntimeError("workspace defaults failed")
 
 
@@ -735,6 +735,47 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertIn("All delivered files and `MEDIA:` attachments", written)
         self.assertIn("Public file, web, and static deliverables", written)
 
+    def test_runtime_policy_adds_public_base_url_rules_only_when_provided(self):
+        runner = FakeRunner()
+        manager = InstanceManagerV2(runner)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+
+            without_base_url = manager._configure_runtime_policy(
+                [workspace],
+                quality="low",
+            )
+            old_policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+
+            with_base_url = manager._configure_runtime_policy(
+                [workspace],
+                quality="low",
+                base_url="https://server-001.web.dolaio.cn/",
+            )
+            new_policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIsNone(without_base_url["base_url"])
+        self.assertNotIn("public file base URL", old_policy)
+        self.assertEqual(
+            with_base_url["base_url"],
+            "https://server-001.web.dolaio.cn/",
+        )
+        self.assertIn(
+            "This host's public file base URL is "
+            "`https://server-001.web.dolaio.cn/`.",
+            new_policy,
+        )
+        self.assertIn(
+            "`MEDIA:https://server-001.web.dolaio.cn/<relative-path>`",
+            new_policy,
+        )
+        self.assertLess(
+            new_policy.index("This host's public file base URL"),
+            new_policy.index("Preserve existing and unrelated changes"),
+        )
+
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(
             responses={
@@ -839,11 +880,13 @@ class CreateInstanceV2Test(unittest.TestCase):
                     template_name="base",
                     model_key="test-key",
                     model="openai/gpt-5",
+                    base_url="https://server-001.web.dolaio.cn/",
                     workspace_root=str(workspace_root),
                 )
             )
 
             self.assertTrue(result["ok"])
+            self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
             self.assertEqual(result["additional_agents"], [])
             self.assertIsInstance(result["gateway_token"], str)
             self.assertGreaterEqual(len(result["gateway_token"]), 40)
@@ -860,6 +903,10 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertIn("every delivered file", global_skill.read_text(encoding="utf-8"))
             runtime_policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
             self.assertEqual(runtime_policy.count(manager.RUNTIME_POLICY_START), 1)
+            self.assertIn(
+                "`MEDIA:https://server-001.web.dolaio.cn/<relative-path>`",
+                runtime_policy,
+            )
             for expected_rule in [
                 "Preserve existing and unrelated changes",
                 "after two failures for the same reason",

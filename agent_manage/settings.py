@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
@@ -79,6 +80,33 @@ def normalize_image_quality(quality: str | None) -> str:
         allowed = ", ".join(IMAGE_QUALITY_CHOICES)
         raise ValueError(f"Unsupported image quality '{quality}'. Allowed: {allowed}")
     return resolved
+
+
+def normalize_public_base_url(base_url: str | None) -> str | None:
+    if base_url is None or not base_url.strip():
+        return None
+
+    resolved = base_url.strip()
+    if any(ord(character) < 32 for character in resolved):
+        raise ValueError("Invalid base_url: control characters are not allowed")
+
+    parsed = urlparse(resolved)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Invalid base_url: expected an absolute HTTP(S) URL")
+    if parsed.username or parsed.password:
+        raise ValueError("Invalid base_url: credentials are not allowed")
+    if not re.fullmatch(r"[A-Za-z0-9.:[\]-]+", parsed.netloc):
+        raise ValueError("Invalid base_url: hostname or port contains unsafe characters")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("Invalid base_url: port must be numeric and valid") from exc
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError(
+            "Invalid base_url: expected a site root without path, query, or fragment"
+        )
+
+    return f"{parsed.scheme.lower()}://{parsed.netloc}/"
 
 
 def catalog_url_for_shop(catalog_url: str, shop: str | None = None) -> str:

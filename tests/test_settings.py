@@ -11,6 +11,7 @@ from agent_manage.settings import (
     gateway_for_base_url,
     model_base_url_for_shop,
     normalize_image_quality,
+    normalize_public_base_url,
     normalize_shop,
     same_url_host,
     shop_from_model_base_url,
@@ -23,6 +24,27 @@ class ModelGatewaySettingsTest(unittest.TestCase):
         self.assertEqual(DEFAULT_AI_SHOP, "shop")
         self.assertEqual(CreateInstanceRequest().model_env, "global")
         self.assertEqual(CreateInstanceRequest().ai_shop, "shop")
+        self.assertIsNone(CreateInstanceRequest().base_url)
+
+    def test_normalize_public_base_url(self):
+        self.assertEqual(
+            normalize_public_base_url(" HTTPS://server-001.web.dolaio.cn "),
+            "https://server-001.web.dolaio.cn/",
+        )
+        self.assertIsNone(normalize_public_base_url(None))
+        self.assertIsNone(normalize_public_base_url(""))
+
+        for invalid in [
+            "server-001.web.dolaio.cn",
+            "ftp://server-001.web.dolaio.cn/",
+            "https://user:pass@server-001.web.dolaio.cn/",
+            "https://server-001.web.dolaio.cn/files/",
+            "https://server-001.web.dolaio.cn/?token=secret",
+            "https://server-001.web.dolaio.cn:abc/",
+            "https://server-001.web.dolaio.cn`/",
+        ]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                normalize_public_base_url(invalid)
         self.assertEqual(
             InstanceManagerV2.MODEL_CATALOG_URL,
             "https://api.dola.io/aigateway/api/frontend/aimodels/byProvider/shop",

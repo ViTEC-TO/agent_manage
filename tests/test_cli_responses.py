@@ -144,6 +144,31 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(request.image_quality, "low")
 
+    def test_agent_manage_create_instance_accepts_base_url(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.create_instance.return_value = {
+                "ok": True,
+                "agent_name": "base",
+            }
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "create-instance",
+                        "--template-name",
+                        "base",
+                        "--model-key",
+                        "test-key",
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
+                    ]
+                )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
+
     def test_agent_manage_create_instance_accepts_local_agent_zip(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
             manager_cls.return_value.create_instance.return_value = {
