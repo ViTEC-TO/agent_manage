@@ -405,6 +405,7 @@ class InstanceManagerV2(
     def add_agents(self, request: AddAgentsRequest) -> Dict[str, object]:
         if not request.agents:
             raise ValueError("agents is required")
+        public_base_url = normalize_public_base_url(request.base_url)
 
         steps: List[Dict[str, object]] = []
         agent_results: List[Dict[str, object]] = []
@@ -531,6 +532,7 @@ class InstanceManagerV2(
             lambda: self._configure_workspace_defaults(
                 [Path(str(item["workspace"])) for item in agent_results],
                 quality="low",
+                base_url=public_base_url,
             ),
         )
 
@@ -541,6 +543,7 @@ class InstanceManagerV2(
             "skipped_count": skipped_count,
             "restart_required": False,
             "post_batch_actions": [],
+            "base_url": public_base_url,
             "tools_config": tools_result,
             "workspace_defaults": workspace_defaults,
             "agents": agent_results,

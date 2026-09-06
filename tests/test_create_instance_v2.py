@@ -2070,6 +2070,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                         ),
                     ],
                     workspace_root=str(tmp_path / "data"),
+                    base_url="https://server-001.web.dolaio.cn/",
                 )
             )
 
@@ -2078,6 +2079,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["skipped_count"], 0)
             self.assertFalse(result["restart_required"])
             self.assertEqual(result["post_batch_actions"], [])
+            self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
             self.assertEqual(
                 (tmp_path / "data" / "base" / "SOUL.md").read_text(encoding="utf-8"),
                 "base soul\n",
@@ -2128,6 +2130,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                 policy = policy_path.read_text(encoding="utf-8")
                 self.assertIn("`nginx-delivery` Skill", policy)
                 self.assertIn('quality: "low"', policy)
+                self.assertIn(
+                    "`MEDIA:https://server-001.web.dolaio.cn/<relative-path>`",
+                    policy,
+                )
             self.assertTrue((tmp_path / "skills" / "nginx-delivery" / "SKILL.md").is_file())
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(

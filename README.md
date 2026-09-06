@@ -222,6 +222,7 @@ python3 scripts/agentctl.py create-instance \
 - 批量追加完成后会写入 `tools.agentToAgent.enabled = true`，并把 `main`、本批次 agent 和多 agent 团队成员合并进
   `tools.agentToAgent.allow`；同时设置 `tools.sessions.visibility = all`
 - 批量追加完成后会为本批次全部 workspace 同步与 `create-instance` 相同的受管运行规则和内置公共 Skill；默认图片质量为 `low`
+- `add-agents` 同样支持可选 `--base-url https://server-001.web.dolaio.cn/`；传入后会为本批次全部 workspace 写入与 `create-instance` 相同的公网文件根地址和 `MEDIA:` 映射规则，未传时保持原有规则不变
 - 批量追加完成后不额外执行 `openclaw gateway restart`
 - 返回体会显式给出 `restart_required = false` 和空的 `post_batch_actions`
 
@@ -239,6 +240,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-agents \
 可选参数：
 
 - `--workspace-root`
+- `--base-url`
 - `--config-path`
 - `--openclaw-bin`
 - `--project-dir`

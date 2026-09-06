@@ -32,6 +32,7 @@ class AddAgentRequest:
 class AddAgentsRequest:
     agents: list[AddAgentRequest]
     workspace_root: str = "~/data"
+    base_url: str | None = None
 
 
 @dataclass

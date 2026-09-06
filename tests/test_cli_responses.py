@@ -231,6 +231,8 @@ class CliResponseTest(unittest.TestCase):
                         "add-agents",
                         "--agents",
                         '[\"base\", {\"agent_name\": \"demo\", \"model\": \"openai/gpt-5\"}]',
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
                     ]
                 )
 
@@ -241,6 +243,7 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(request.agents[0].agent_name, "base")
         self.assertEqual(request.agents[1].agent_name, "demo")
         self.assertEqual(request.agents[1].model, "openai/gpt-5")
+        self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
         self.assertEqual(payload["result"]["added_count"], 2)
 
     def test_agent_manage_add_agents_parses_optional_template_name(self):

@@ -71,6 +71,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_agents = subparsers.add_parser("add-agents")
     add_agents.add_argument("--agents", required=True)
     add_agents.add_argument("--workspace-root", default="~/data")
+    add_agents.add_argument("--base-url")
 
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
@@ -171,6 +172,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 AddAgentsRequest(
                     agents=_parse_add_agents(args.agents),
                     workspace_root=args.workspace_root,
+                    base_url=args.base_url,
                 )
             )
             print_json(build_success_response(result))

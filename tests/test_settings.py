@@ -1,6 +1,6 @@
 import unittest
 
-from agent_manage.models import CreateInstanceRequest
+from agent_manage.models import AddAgentsRequest, CreateInstanceRequest
 from agent_manage.orchestrator import InstanceManagerV2
 from agent_manage.settings import (
     DEFAULT_AI_SHOP,
@@ -25,6 +25,7 @@ class ModelGatewaySettingsTest(unittest.TestCase):
         self.assertEqual(CreateInstanceRequest().model_env, "global")
         self.assertEqual(CreateInstanceRequest().ai_shop, "shop")
         self.assertIsNone(CreateInstanceRequest().base_url)
+        self.assertIsNone(AddAgentsRequest(agents=[]).base_url)
 
     def test_normalize_public_base_url(self):
         self.assertEqual(
