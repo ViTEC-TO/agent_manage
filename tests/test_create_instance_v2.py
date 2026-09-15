@@ -829,7 +829,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "web": {
                             "search": {
                                 "region": "us",
-                            }
+                            },
+                            "fetch": {
+                                "maxBytes": 1024,
+                            },
                         },
                     },
                     "models": {
@@ -957,7 +960,10 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(saved_config["tools"]["exec"]["security"], "full")
             self.assertEqual(saved_config["tools"]["exec"]["timeout"], 30)
             self.assertEqual(saved_config["tools"]["web"]["search"], {"enabled": False})
-            self.assertEqual(saved_config["tools"]["web"]["fetch"], {"enabled": True})
+            self.assertEqual(
+                saved_config["tools"]["web"]["fetch"],
+                {"enabled": True, "useTrustedEnvProxy": True, "maxBytes": 1024},
+            )
             self.assertEqual(
                 saved_config["tools"]["agentToAgent"],
                 {
