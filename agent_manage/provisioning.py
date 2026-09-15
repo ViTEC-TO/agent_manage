@@ -591,6 +591,7 @@ class ProvisioningMixin:
                 "exec_security": "full",
                 "web_search_enabled": False,
                 "web_fetch_enabled": True,
+                "web_fetch_use_trusted_env_proxy": True,
                 "agent_to_agent_enabled": True,
                 "agent_to_agent_allow": normalized_agent_names,
                 "sessions_visibility": "all",
@@ -606,7 +607,9 @@ class ProvisioningMixin:
         exec_config["security"] = "full"
         web = tools.setdefault("web", {})
         web["search"] = {"enabled": False}
-        web["fetch"] = {"enabled": True}
+        fetch = web.setdefault("fetch", {})
+        fetch["enabled"] = True
+        fetch["useTrustedEnvProxy"] = True
         agent_to_agent = tools.setdefault("agentToAgent", {})
         agent_to_agent["enabled"] = True
         agent_to_agent["allow"] = self._merge_agent_to_agent_allow(
@@ -632,6 +635,7 @@ class ProvisioningMixin:
                 "exec_security": "full",
                 "web_search_enabled": False,
                 "web_fetch_enabled": True,
+                "web_fetch_use_trusted_env_proxy": True,
                 "agent_to_agent_enabled": True,
                 "agent_to_agent_allow": agent_to_agent["allow"],
                 "sessions_visibility": "all",
@@ -643,6 +647,7 @@ class ProvisioningMixin:
             "exec_security": "full",
             "web_search_enabled": False,
             "web_fetch_enabled": True,
+            "web_fetch_use_trusted_env_proxy": True,
             "agent_to_agent_enabled": True,
             "agent_to_agent_allow": agent_to_agent["allow"],
             "sessions_visibility": "all",

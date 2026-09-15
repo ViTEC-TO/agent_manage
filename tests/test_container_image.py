@@ -170,6 +170,64 @@ class ContainerImageTest(unittest.TestCase):
         )
         self.assertIn("dirs_exist_ok=True, symlinks=True", seed_module)
 
+    def test_base_image_build_assets_do_not_contain_a_prebuilt_agent(self):
+        image_directory = Path(__file__).resolve().parents[1] / "container-image"
+        dockerfile = (image_directory / "Dockerfile.base").read_text(encoding="utf-8")
+        upper = dockerfile.upper()
+
+        self.assertNotIn("ADD-AGENT", dockerfile)
+        self.assertNotIn("TEMPLATE_IDENTIFY", upper)
+        self.assertNotIn("CONTAINER-IMAGE/TEMPLATES", upper)
+        self.assertNotIn("MODEL_KEY", upper)
+        self.assertNotIn("GATEWAY_TOKEN", upper)
+        self.assertNotIn("AUTH_TOKEN", upper)
+        self.assertIn('io.dola.unitag.image-kind="agent-base"', dockerfile)
+        self.assertIn("/opt/unitag/openclaw-seed", dockerfile)
+        self.assertIn('npm install -g "@larksuite/cli@${LARKSUITE_CLI_VERSION}"', dockerfile)
+        self.assertIn('openclaw plugins install "@tencent-weixin/openclaw-weixin@${WEIXIN_PLUGIN_VERSION}"', dockerfile)
+        self.assertIn('openclaw plugins install "@openclaw/qqbot@${QQBOT_PLUGIN_VERSION}"', dockerfile)
+        self.assertIn('openclaw plugins install "@openclaw/feishu@${FEISHU_PLUGIN_VERSION}"', dockerfile)
+        self.assertIn("openclaw config set tools.web.fetch.useTrustedEnvProxy true --strict-json", dockerfile)
+        self.assertIn("--no-install-recommends nginx", dockerfile)
+
+        build_script = (image_directory / "build-base-image.ps1").read_text(encoding="utf-8")
+        validation_script = (image_directory / "validate-base-image.ps1").read_text(encoding="utf-8")
+        publish_script = (image_directory / "publish-base-image.ps1").read_text(encoding="utf-8")
+        self.assertIn("Dockerfile.base", build_script)
+        self.assertIn("validate-base-image.ps1", build_script)
+        self.assertNotIn("TemplateArchive", build_script)
+        self.assertNotIn("TemplateIdentify", build_script)
+        self.assertIn("NoPrebuiltAgent=true", validation_script)
+        self.assertIn('assert not config.get("agents", {}).get("list", [])', validation_script)
+        self.assertIn('config["tools"]["web"]["fetch"]["useTrustedEnvProxy"] is True', validation_script)
+        self.assertIn('"--cap-drop", "ALL"', validation_script)
+        self.assertIn('"no-new-privileges:true"', validation_script)
+        self.assertIn("ImmutableReference=", publish_script)
+
+    def test_agent_image_derives_from_base_and_only_adds_the_template_agent(self):
+        image_directory = Path(__file__).resolve().parents[1] / "container-image"
+        dockerfile = (image_directory / "Dockerfile.agent").read_text(encoding="utf-8")
+
+        self.assertIn("ARG UNITAG_AGENT_BASE_IMAGE", dockerfile)
+        self.assertIn("FROM ${UNITAG_AGENT_BASE_IMAGE}", dockerfile)
+        self.assertIn("container-image/templates/${TEMPLATE_IDENTIFY}.zip", dockerfile)
+        self.assertIn("agentctl.py add-agent", dockerfile)
+        self.assertIn("rm -rf /opt/unitag/openclaw-seed", dockerfile)
+        self.assertIn("cp -a /home/node/.openclaw /opt/unitag/openclaw-seed", dockerfile)
+        self.assertNotIn("apt-get", dockerfile)
+        self.assertNotIn("npm install", dockerfile)
+        self.assertNotIn("openclaw plugins install", dockerfile)
+
+        build_script = (image_directory / "build-agent-image.ps1").read_text(encoding="utf-8")
+        publish_script = (image_directory / "publish-agent-image.ps1").read_text(encoding="utf-8")
+        self.assertIn("Dockerfile.agent", build_script)
+        self.assertIn("validate-prebuilt-image.ps1", build_script)
+        self.assertIn("BaseImageReference", build_script)
+        self.assertIn("ImmutableReference=", publish_script)
+
+        validation_script = (image_directory / "validate-prebuilt-image.ps1").read_text(encoding="utf-8")
+        self.assertIn('config["tools"]["web"]["fetch"]["useTrustedEnvProxy"] is True', validation_script)
+
     def test_seed_validation_rejects_config_and_profile_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             seed = Path(tmp)
