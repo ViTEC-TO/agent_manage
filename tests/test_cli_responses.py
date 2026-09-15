@@ -45,6 +45,8 @@ class CliResponseTest(unittest.TestCase):
             workspace_root="/data",
             model=None,
             base_url=None,
+            template_zip_url=None,
+            template_zip_sha256=None,
         )
 
     def test_agent_manage_add_agent_accepts_base_url(self):
@@ -66,6 +68,43 @@ class CliResponseTest(unittest.TestCase):
             manager_cls.return_value.add_agent.call_args.kwargs["base_url"],
             "https://server-001.web.dolaio.cn/",
         )
+
+    def test_agent_manage_add_agent_accepts_template_archive_source(self):
+        digest = "a" * 64
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {"ok": True}
+            with redirect_stdout(io.StringIO()):
+                exit_code = agent_manage_main(
+                    [
+                        "add-agent",
+                        "--template-name",
+                        "team",
+                        "--template-zip-url",
+                        "https://assets.example.test/team.zip",
+                        "--template-zip-sha256",
+                        digest,
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        kwargs = manager_cls.return_value.add_agent.call_args.kwargs
+        self.assertEqual(kwargs["template_zip_url"], "https://assets.example.test/team.zip")
+        self.assertEqual(kwargs["template_zip_sha256"], digest)
+
+    def test_agent_manage_add_agent_surfaces_restart_required(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {
+                "ok": True,
+                "restart_required": True,
+            }
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    ["add-agent", "--template-name", "team"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(json.loads(stdout.getvalue())["restartRequired"])
 
     def test_agent_manage_configure_instance_dispatches_without_create(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
@@ -386,13 +425,20 @@ class CliResponseTest(unittest.TestCase):
                     [
                         "add-agents",
                         "--agents",
-                        '[{"agent_name":"demo","template_name":"demo-template"}]',
+                        '[{"agent_name":"demo","template_name":"demo-template",'
+                        '"template_zip_url":"https://assets.example.test/demo.zip",'
+                        '"template_zip_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]',
                     ]
                 )
 
         request = manager_cls.return_value.add_agents.call_args.args[0]
         self.assertEqual(exit_code, 0)
         self.assertEqual(request.agents[0].template_name, "demo-template")
+        self.assertEqual(
+            request.agents[0].template_zip_url,
+            "https://assets.example.test/demo.zip",
+        )
+        self.assertEqual(request.agents[0].template_zip_sha256, "a" * 64)
 
     def test_agent_manage_weixin_bot_status_uses_result_envelope(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:

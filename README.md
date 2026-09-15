@@ -25,6 +25,10 @@ All three commands accept `--base-url https://server-001.web.dolaio.cn/`. The va
 must be an HTTP(S) site root without a path, query, fragment, or credentials; it is
 normalized with a trailing slash and written into the managed runtime policy for
 every affected Agent workspace.
+For an already-running container, `add-agent` can optionally receive
+`--template-zip-url` and `--template-zip-sha256`. The URL must use HTTPS; the
+archive is streamed into the persistent template directory, validated, and
+atomically replaces the local `{template_name}.zip` only for a successful add.
 
 Build assets are under `container-image/`. The build command accepts the template
 zip directly and always runs the DockerManager-compatible runtime validator:
@@ -298,8 +302,9 @@ python3 scripts/agentctl.py create-instance \
   `tools.agentToAgent.allow`；同时设置 `tools.sessions.visibility = all`
 - 批量追加完成后会为本批次全部 workspace 同步与 `create-instance` 相同的受管运行规则和内置公共 Skill；默认图片质量为 `low`
 - `add-agents` 同样支持可选 `--base-url https://server-001.web.dolaio.cn/`；传入后会为本批次全部 workspace 写入与 `create-instance` 相同的公网文件根地址和 `MEDIA:` 映射规则，未传时保持原有规则不变
+- 每个 `--agents` JSON 条目可选传入 `template_zip_url` 和 `template_zip_sha256`；下载只接受 HTTPS，落盘前会校验大小、SHA-256（传入时）以及模板归档安全规则
 - 批量追加完成后不额外执行 `openclaw gateway restart`
-- 返回体会显式给出 `restart_required = false` 和空的 `post_batch_actions`
+- 实际新增至少一个 Agent 时返回 `restart_required = true`，全部为已存在 Agent 而跳过时返回 `false`；执行方据此决定是否重启 Gateway
 
 ### 远程执行
 
@@ -344,7 +349,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-agents \
     "requested_count": 2,
     "added_count": 1,
     "skipped_count": 1,
-    "restart_required": false,
+    "restart_required": true,
     "post_batch_actions": [],
     "agents": [
       {

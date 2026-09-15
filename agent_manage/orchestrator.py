@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from time import perf_counter
 from typing import Dict, List
@@ -12,6 +13,7 @@ from .gateway_management import GatewayManagementMixin
 from .manager_core import ManagerCore
 from .model_management import ModelManagementMixin
 from .models import AddAgentRequest, AddAgentsRequest, CreateInstanceRequest
+from .template_download import replace_template_archive
 from .provisioning import ProvisioningMixin
 from .settings import normalize_image_quality, normalize_public_base_url, normalize_shop
 
@@ -41,6 +43,8 @@ class InstanceManagerV2(
         workspace_root: str = "~/data",
         model: str | None = None,
         base_url: str | None = None,
+        template_zip_url: str | None = None,
+        template_zip_sha256: str | None = None,
     ) -> Dict[str, object]:
         """Register a template's primary and manifest-declared agents."""
         resolved_agent_name = (agent_name or template_name).strip()
@@ -51,6 +55,8 @@ class InstanceManagerV2(
                         agent_name=resolved_agent_name,
                         template_name=template_name,
                         model=model,
+                        template_zip_url=template_zip_url,
+                        template_zip_sha256=template_zip_sha256,
                     )
                 ],
                 workspace_root=workspace_root,
@@ -544,142 +550,224 @@ class InstanceManagerV2(
         steps: List[Dict[str, object]] = []
         agent_results: List[Dict[str, object]] = []
         seen_agent_names = set()
+        completed_provisions: List[Dict[str, object]] = []
+        config_existed_before = self.config_path.exists()
+        config_snapshot = self._snapshot_config_file()
 
-        for spec in request.agents:
-            agent_name = spec.agent_name.strip()
-            if not agent_name:
-                raise ValueError("agent_name is required")
-            if agent_name in seen_agent_names:
-                raise ValueError(f"Duplicate agent_name in batch: {agent_name}")
-            seen_agent_names.add(agent_name)
+        try:
+            with ExitStack() as archive_replacements:
+                for spec in request.agents:
+                    agent_name = spec.agent_name.strip()
+                    if not agent_name:
+                        raise ValueError("agent_name is required")
+                    if agent_name in seen_agent_names:
+                        raise ValueError(f"Duplicate agent_name in batch: {agent_name}")
+                    seen_agent_names.add(agent_name)
 
-            template_name = self.resolve_add_agent_template_name(spec)
-            workspace = self.resolve_add_agent_workspace(spec, request.workspace_root)
-            archive_path = self.template_root / f"{template_name}.zip"
-            template_dir = self.template_root / template_name
+                    template_name = self.resolve_add_agent_template_name(spec)
+                    workspace = self.resolve_add_agent_workspace(spec, request.workspace_root)
+                    archive_path = self.template_root / f"{template_name}.zip"
+                    template_dir = self.template_root / template_name
 
-            self._provision_agent_from_template(
-                steps=steps,
-                template_name=template_name,
-                agent_name=agent_name,
-                archive_path=archive_path,
-                template_dir=template_dir,
-                workspace=workspace,
-                model=spec.model,
-                rollback_on_fail=True,
-                step_scope=agent_name,
-            )
+                    archive_replacements.enter_context(
+                        replace_template_archive(
+                            url=spec.template_zip_url,
+                            expected_sha256=spec.template_zip_sha256,
+                            destination=archive_path,
+                        )
+                    )
+                    provision_result = self._provision_agent_from_template(
+                        steps=steps,
+                        template_name=template_name,
+                        agent_name=agent_name,
+                        archive_path=archive_path,
+                        template_dir=template_dir,
+                        workspace=workspace,
+                        model=spec.model,
+                        rollback_on_fail=True,
+                        step_scope=agent_name,
+                        defer_template_dir_commit=True,
+                    )
+                    completed_provisions.append(
+                        {
+                            "agent_name": agent_name,
+                            "workspace": workspace,
+                            "template_dir": template_dir,
+                            **provision_result,
+                        }
+                    )
 
-            agent_results.append(
-                {
-                    "agent_name": agent_name,
-                    "template_name": template_name,
-                    "workspace": str(workspace),
-                    "archive_path": str(archive_path),
-                    "template_dir": str(template_dir),
-                    "model": spec.model,
-                }
-            )
-            manifest = self._load_template_manifest(template_dir)
-            additional_specs = self._multi_agent_specs_from_template(
-                template_dir=template_dir,
-                manifest=manifest,
-                primary_agent_name=agent_name,
-                workspace_root=request.workspace_root,
-                fallback_model=spec.model,
-            )
-            for additional_spec in additional_specs:
-                additional_agent_name = str(additional_spec["agent_name"])
-                if additional_agent_name in seen_agent_names:
-                    raise ValueError(f"Duplicate agent_name in batch: {additional_agent_name}")
-                seen_agent_names.add(additional_agent_name)
+                    agent_results.append(
+                        {
+                            "agent_name": agent_name,
+                            "template_name": template_name,
+                            "workspace": str(workspace),
+                            "archive_path": str(archive_path),
+                            "template_dir": str(template_dir),
+                            "model": spec.model,
+                        }
+                    )
+                    manifest = self._load_template_manifest(template_dir)
+                    additional_specs = self._multi_agent_specs_from_template(
+                        template_dir=template_dir,
+                        manifest=manifest,
+                        primary_agent_name=agent_name,
+                        workspace_root=request.workspace_root,
+                        fallback_model=spec.model,
+                    )
+                    for additional_spec in additional_specs:
+                        additional_agent_name = str(additional_spec["agent_name"])
+                        if additional_agent_name in seen_agent_names:
+                            raise ValueError(f"Duplicate agent_name in batch: {additional_agent_name}")
+                        seen_agent_names.add(additional_agent_name)
 
-                additional_template_dir = Path(str(additional_spec["template_dir"]))
-                additional_workspace = Path(str(additional_spec["workspace"]))
-                additional_model = (
-                    additional_spec["model"]
-                    if isinstance(additional_spec.get("model"), str)
-                    else None
-                )
-                self._provision_agent_from_prepared_template(
-                    steps=steps,
-                    template_name=str(additional_spec["template_name"]),
-                    agent_name=additional_agent_name,
-                    template_dir=additional_template_dir,
-                    workspace=additional_workspace,
-                    model=additional_model,
-                    rollback_on_fail=True,
-                    step_scope=additional_agent_name,
-                )
-                agent_results.append(
-                    {
-                        "agent_name": additional_agent_name,
-                        "template_name": additional_spec["template_name"],
-                        "source": additional_spec["source"],
-                        "parent_agent_name": agent_name,
-                        "workspace": str(additional_workspace),
-                        "archive_path": str(archive_path),
-                        "template_dir": str(additional_template_dir),
-                        "model": additional_model,
+                        additional_template_dir = Path(str(additional_spec["template_dir"]))
+                        additional_workspace = Path(str(additional_spec["workspace"]))
+                        additional_model = (
+                            additional_spec["model"]
+                            if isinstance(additional_spec.get("model"), str)
+                            else None
+                        )
+                        additional_result = self._provision_agent_from_prepared_template(
+                            steps=steps,
+                            template_name=str(additional_spec["template_name"]),
+                            agent_name=additional_agent_name,
+                            template_dir=additional_template_dir,
+                            workspace=additional_workspace,
+                            model=additional_model,
+                            rollback_on_fail=True,
+                            step_scope=additional_agent_name,
+                        )
+                        completed_provisions.append(
+                            {
+                                "agent_name": additional_agent_name,
+                                "workspace": additional_workspace,
+                                "template_dir": None,
+                                "created_template_dir": False,
+                                "preserved_template_dir": None,
+                                **additional_result,
+                            }
+                        )
+                        agent_results.append(
+                            {
+                                "agent_name": additional_agent_name,
+                                "template_name": additional_spec["template_name"],
+                                "source": additional_spec["source"],
+                                "parent_agent_name": agent_name,
+                                "workspace": str(additional_workspace),
+                                "archive_path": str(archive_path),
+                                "template_dir": str(additional_template_dir),
+                                "model": additional_model,
+                            }
+                        )
+
+                step_results = self._index_step_results(steps)
+                added_count = 0
+                skipped_count = 0
+                for item in agent_results:
+                    agent_name = item["agent_name"]
+                    add_result = step_results.get(self._scoped_step_name("agents.add", agent_name), {})
+                    status = "skipped" if add_result.get("skipped") else "added"
+                    item["status"] = status
+                    item["result"] = {
+                        "template_prepare": step_results.get(
+                            self._scoped_step_name("template.prepare", agent_name),
+                            {},
+                        ),
+                        "libraries_ensure": step_results.get(
+                            self._scoped_step_name("libraries.ensure", agent_name),
+                            {},
+                        ),
+                        "common_skills_install": step_results.get(
+                            self._scoped_step_name("common_skills.install", agent_name),
+                            {},
+                        ),
+                        "agents_add": add_result,
+                        "workspace_populate": step_results.get(
+                            self._scoped_step_name("workspace.populate", agent_name),
+                            {},
+                        ),
                     }
+                    if status == "added":
+                        added_count += 1
+                    else:
+                        skipped_count += 1
+
+                tools_result = self._run_timed_step(
+                    steps,
+                    "config.configure_tools",
+                    lambda: self._configure_config_tools([item["agent_name"] for item in agent_results]),
                 )
-        step_results = self._index_step_results(steps)
-        added_count = 0
-        skipped_count = 0
-        for item in agent_results:
-            agent_name = item["agent_name"]
-            add_result = step_results.get(self._scoped_step_name("agents.add", agent_name), {})
-            status = "skipped" if add_result.get("skipped") else "added"
-            item["status"] = status
-            item["result"] = {
-                "template_prepare": step_results.get(
-                    self._scoped_step_name("template.prepare", agent_name),
-                    {},
-                ),
-                "libraries_ensure": step_results.get(
-                    self._scoped_step_name("libraries.ensure", agent_name),
-                    {},
-                ),
-                "common_skills_install": step_results.get(
-                    self._scoped_step_name("common_skills.install", agent_name),
-                    {},
-                ),
-                "agents_add": add_result,
-                "workspace_populate": step_results.get(
-                    self._scoped_step_name("workspace.populate", agent_name),
-                    {},
-                ),
-            }
-            if status == "added":
-                added_count += 1
-            else:
-                skipped_count += 1
+                workspace_defaults = self._run_timed_step(
+                    steps,
+                    "workspace.configure_image_generation",
+                    lambda: self._configure_workspace_defaults(
+                        [Path(str(item["workspace"])) for item in agent_results],
+                        quality="low",
+                        base_url=public_base_url,
+                    ),
+                )
 
-        tools_result = self._run_timed_step(
-            steps,
-            "config.configure_tools",
-            lambda: self._configure_config_tools([item["agent_name"] for item in agent_results]),
-        )
-        workspace_defaults = self._run_timed_step(
-            steps,
-            "workspace.configure_image_generation",
-            lambda: self._configure_workspace_defaults(
-                [Path(str(item["workspace"])) for item in agent_results],
-                quality="low",
-                base_url=public_base_url,
-            ),
-        )
+                for provision in completed_provisions:
+                    preserved_template_dir = provision.get("preserved_template_dir")
+                    if isinstance(preserved_template_dir, Path) and preserved_template_dir.exists():
+                        self._safe_purge_template_dir(preserved_template_dir)
 
-        return {
-            "ok": True,
-            "requested_count": len(request.agents),
-            "added_count": added_count,
-            "skipped_count": skipped_count,
-            "restart_required": False,
-            "post_batch_actions": [],
-            "base_url": public_base_url,
-            "tools_config": tools_result,
-            "workspace_defaults": workspace_defaults,
-            "agents": agent_results,
-            "steps": steps,
-        }
+                return {
+                    "ok": True,
+                    "requested_count": len(request.agents),
+                    "added_count": added_count,
+                    "skipped_count": skipped_count,
+                    "restart_required": added_count > 0,
+                    "post_batch_actions": [],
+                    "base_url": public_base_url,
+                    "tools_config": tools_result,
+                    "workspace_defaults": workspace_defaults,
+                    "agents": agent_results,
+                    "steps": steps,
+                }
+        except Exception:
+            rollback_steps: List[Dict[str, object]] = []
+            for provision in reversed(completed_provisions):
+                workspace = Path(str(provision["workspace"]))
+                if provision.get("created_workspace"):
+                    self._run_timed_rollback_step(
+                        rollback_steps,
+                        lambda workspace=workspace: self._safe_purge_workspace(workspace),
+                    )
+                if provision.get("created_agent"):
+                    agent_name = str(provision["agent_name"])
+                    self._run_timed_rollback_step(
+                        rollback_steps,
+                        lambda agent_name=agent_name: self._safe_delete_agent(agent_name),
+                    )
+
+                template_dir = provision.get("template_dir")
+                preserved_template_dir = provision.get("preserved_template_dir")
+                if isinstance(template_dir, Path):
+                    if template_dir.exists() and (
+                        provision.get("created_template_dir")
+                        or isinstance(preserved_template_dir, Path)
+                    ):
+                        self._run_timed_rollback_step(
+                            rollback_steps,
+                            lambda template_dir=template_dir: self._safe_purge_template_dir(template_dir),
+                        )
+                    if isinstance(preserved_template_dir, Path) and preserved_template_dir.exists():
+                        self._run_timed_rollback_step(
+                            rollback_steps,
+                            lambda preserved_template_dir=preserved_template_dir, template_dir=template_dir:
+                                self._safe_restore_template_dir(preserved_template_dir, template_dir),
+                        )
+
+            if config_snapshot is not None:
+                self._run_timed_rollback_step(
+                    rollback_steps,
+                    lambda: self._safe_restore_config_snapshot(config_snapshot),
+                )
+            elif not config_existed_before and self.config_path.exists():
+                try:
+                    self.config_path.unlink(missing_ok=True)
+                except Exception as rollback_error:
+                    self.runner.log(f"failed to remove newly created config during rollback: {rollback_error}")
+            raise

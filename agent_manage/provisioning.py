@@ -760,6 +760,7 @@ class ProvisioningMixin:
         rollback_on_fail: bool,
         step_scope: Optional[str],
         require_existing_agent: bool = False,
+        defer_template_dir_commit: bool = False,
     ) -> Dict[str, object]:
         workspace_existed_before = workspace.exists()
         template_dir_existed_before = template_dir.exists()
@@ -769,6 +770,7 @@ class ProvisioningMixin:
         created_agent = False
         started_template_prepare = False
         created_workspace = False
+        preserved_template_dir: Optional[Path] = None
 
         try:
             self._run_timed_step(
@@ -777,6 +779,15 @@ class ProvisioningMixin:
                 lambda: self._inspect_template_archive(archive_path),
             )
             started_template_prepare = True
+            if template_dir_existed_before and not self.runner.dry_run:
+                preserved_template_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{template_dir.name}.provision-backup-",
+                        dir=str(template_dir.parent),
+                    )
+                )
+                preserved_template_dir.rmdir()
+                template_dir.replace(preserved_template_dir)
             self._run_timed_step(
                 steps,
                 self._scoped_step_name("template.prepare", step_scope),
@@ -867,6 +878,9 @@ class ProvisioningMixin:
                     and workspace.exists()
                     and not workspace_result.get("skipped", False)
                 )
+            if preserved_template_dir is not None and not defer_template_dir_commit:
+                shutil.rmtree(preserved_template_dir)
+                preserved_template_dir = None
             return {
                 "created_agent": created_agent,
                 "started_template_prepare": started_template_prepare,
@@ -874,6 +888,7 @@ class ProvisioningMixin:
                     not template_dir_existed_before and template_dir.exists()
                 ),
                 "created_workspace": created_workspace,
+                "preserved_template_dir": preserved_template_dir,
             }
         except Exception as exc:
             rollback_steps: List[Dict[str, object]] = []
@@ -890,6 +905,17 @@ class ProvisioningMixin:
                     self._run_timed_rollback_step(
                         rollback_steps, lambda: self._safe_purge_template_dir(template_dir)
                     )
+            if preserved_template_dir is not None and preserved_template_dir.exists():
+                if template_dir.exists():
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_template_dir(template_dir)
+                    )
+                self._run_timed_rollback_step(
+                    rollback_steps,
+                    lambda: self._safe_restore_template_dir(
+                        preserved_template_dir, template_dir
+                    ),
+                )
             raise RuntimeError(
                 json.dumps(
                     {
@@ -1098,3 +1124,15 @@ class ProvisioningMixin:
             return {"step": "rollback.template.purge", "result": {"deleted": True, "path": str(template_dir)}}
         except Exception as exc:
             return {"step": "rollback.template.purge", "error": str(exc)}
+
+    def _safe_restore_template_dir(
+        self, backup_dir: Path, template_dir: Path
+    ) -> Dict[str, object]:
+        try:
+            backup_dir.replace(template_dir)
+            return {
+                "step": "rollback.template.restore",
+                "result": {"restored": True, "path": str(template_dir)},
+            }
+        except Exception as exc:
+            return {"step": "rollback.template.restore", "error": str(exc)}

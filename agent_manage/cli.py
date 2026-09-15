@@ -59,6 +59,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_agent.add_argument("--workspace-root")
     add_agent.add_argument("--model")
     add_agent.add_argument("--base-url")
+    add_agent.add_argument("--template-zip-url")
+    add_agent.add_argument("--template-zip-sha256")
 
     add_agents = subparsers.add_parser("add-agents")
     add_agents.add_argument("--agents", required=True)
@@ -190,6 +192,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ),
                 model=args.model,
                 base_url=args.base_url,
+                template_zip_url=args.template_zip_url,
+                template_zip_sha256=args.template_zip_sha256,
             )
             print_json(_success_response(result, client))
             return 0
@@ -370,6 +374,8 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
         template_name = item.get("template_name")
         workspace = item.get("workspace")
         model = item.get("model")
+        template_zip_url = item.get("template_zip_url")
+        template_zip_sha256 = item.get("template_zip_sha256")
 
         if not isinstance(agent_name, str) or not agent_name.strip():
             raise ValueError(f"agents[{index}].agent_name is required")
@@ -379,6 +385,10 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
             raise ValueError(f"agents[{index}].workspace must be a string")
         if model is not None and not isinstance(model, str):
             raise ValueError(f"agents[{index}].model must be a string")
+        if template_zip_url is not None and not isinstance(template_zip_url, str):
+            raise ValueError(f"agents[{index}].template_zip_url must be a string")
+        if template_zip_sha256 is not None and not isinstance(template_zip_sha256, str):
+            raise ValueError(f"agents[{index}].template_zip_sha256 must be a string")
 
         agents.append(
             AddAgentRequest(
@@ -386,6 +396,16 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
                 template_name=template_name.strip() if isinstance(template_name, str) else None,
                 workspace=workspace.strip() if isinstance(workspace, str) else None,
                 model=model.strip() if isinstance(model, str) else None,
+                template_zip_url=(
+                    template_zip_url.strip()
+                    if isinstance(template_zip_url, str)
+                    else None
+                ),
+                template_zip_sha256=(
+                    template_zip_sha256.strip()
+                    if isinstance(template_zip_sha256, str)
+                    else None
+                ),
             )
         )
     return agents
