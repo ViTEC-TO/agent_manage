@@ -72,9 +72,14 @@ Use the printed `ImmutableReference`, not the mutable tag, as DockerManager's
 4. DockerManager executes `configure-instance` with the model key on stdin.
 5. DockerManager handles `restartRequired`, restores readiness, and publishes the Gateway route.
 
+`configure-instance` reads Agent IDs and explicit workspace paths from the restored
+`openclaw.json`. It does not inspect or extract the template archive or validate
+prebuilt Agent registration. Legacy template arguments are accepted but ignored;
+image build validation owns those checks.
+
 ## Troubleshooting
 
-- `Prebuilt agent is missing`: verify layout protocol v2 and run the validator.
+- Missing prebuilt Agent or workspace: verify layout protocol v2 and run the image validator; `configure-instance` does not recreate them.
 - `existing config is missing gateway.mode`: the image predates the bootable seed contract; rebuild it.
 - Gateway readiness timeout: inspect container logs before retrying; do not fall back silently to the base image.
 - Lark CLI postinstall timeout: the Dockerfile uses a cacheable BuildKit download with a fixed SHA-256 and verifies the package-provided checksum again.

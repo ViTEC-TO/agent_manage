@@ -12,13 +12,15 @@ python3 scripts/agentctl.py add-agent \
 
 # Container runtime: the model key is supplied only after the writable volume is mounted.
 printf '%s' "$MODEL_KEY" | python3 scripts/agentctl.py configure-instance \
-  --template-name unipay-claw-base \
   --model-key-stdin
 ```
 
 `add-agent` expands `template.yaml` multi-agent declarations and continues to use the
 official `openclaw agents add --non-interactive --json` command. `configure-instance`
-requires every declared Agent to already exist and never registers one implicitly.
+reads configured Agents and workspace paths from `openclaw.json`. It only applies
+runtime model, Gateway, tool, and workspace-policy settings; it never reads a
+template archive, registers an Agent, or populates a workspace. Legacy
+`--template-name` and `--agent-zip` arguments remain accepted but are ignored.
 The compatibility `create-instance` command uses the same internal registration and
 configuration stages and continues to register missing Agents.
 All three commands accept `--base-url https://server-001.web.dolaio.cn/`. The value

@@ -114,8 +114,6 @@ class CliResponseTest(unittest.TestCase):
                 exit_code = agent_manage_main(
                     [
                         "configure-instance",
-                        "--template-name",
-                        "base",
                         "--model-key",
                         "runtime-secret",
                         "--base-url",
@@ -126,6 +124,7 @@ class CliResponseTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         manager_cls.return_value.configure_instance.assert_called_once()
         request = manager_cls.return_value.configure_instance.call_args.args[0]
+        self.assertIsNone(request.template_name)
         self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
         manager_cls.return_value.create_instance.assert_not_called()
 
