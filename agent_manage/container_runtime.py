@@ -18,8 +18,14 @@ NGINX_RUNTIME_ROOT = Path("/tmp/nginx")
 DEFAULT_NGINX_PORT = 80
 FORBIDDEN_DIRECTIVES = re.compile(
     r"^\s*(?:alias|auth_request|dav_methods|fastcgi_pass|grpc_pass|load_module|"
-    r"perl|proxy_pass|scgi_pass|ssl_client_certificate|uwsgi_pass)\b",
+    r"perl|scgi_pass|ssl_client_certificate|uwsgi_pass)\b",
     re.IGNORECASE | re.MULTILINE,
+)
+PROXY_PASS_KEYWORD = re.compile(r"(?<![\w-])proxy_pass\b", re.IGNORECASE)
+PROXY_PASS_DIRECTIVE = re.compile(r"(?<![\w-])proxy_pass\s+([^;{}]+);", re.IGNORECASE)
+LOOPBACK_PROXY_TARGET = re.compile(
+    r"http://(?:127\.0\.0\.1|\[::1\]):([0-9]{1,5})",
+    re.IGNORECASE,
 )
 
 
@@ -38,6 +44,7 @@ def resolve_nginx_port(value: str | None) -> int:
 def validate_nginx_config(config: str, expected_port: int) -> None:
     if FORBIDDEN_DIRECTIVES.search(config):
         raise ValueError("nginx configuration contains a forbidden directive")
+    _validate_proxy_pass_directives(config)
 
     includes = re.findall(r"^\s*include\s+([^;]+);", config, re.IGNORECASE | re.MULTILINE)
     if includes != ["/etc/nginx/mime.types"]:
@@ -69,6 +76,23 @@ def validate_nginx_config(config: str, expected_port: int) -> None:
         raise ValueError("nginx directory listing and symlink serving must remain disabled")
 
 
+def _validate_proxy_pass_directives(config: str) -> None:
+    uncommented = re.sub(r"#.*$", "", config, flags=re.MULTILINE)
+    keywords = list(PROXY_PASS_KEYWORD.finditer(uncommented))
+    directives = list(PROXY_PASS_DIRECTIVE.finditer(uncommented))
+    if len(keywords) != len(directives):
+        raise ValueError("proxy_pass must be a complete static directive")
+
+    for directive in directives:
+        target = directive.group(1).strip()
+        match = LOOPBACK_PROXY_TARGET.fullmatch(target)
+        if match is None:
+            raise ValueError("proxy_pass may only target a literal container loopback HTTP endpoint")
+        port = int(match.group(1))
+        if port < 1 or port > 65535:
+            raise ValueError("proxy_pass loopback port must be between 1 and 65535")
+
+
 def initialize_nginx_config(port: int) -> Path:
     PUBLIC_ROOT.mkdir(parents=True, exist_ok=True)
     NGINX_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -85,6 +109,39 @@ def initialize_nginx_config(port: int) -> Path:
     return NGINX_CONFIG_PATH
 
 
+def _render_fallback_nginx_config(port: int) -> Path:
+    template = NGINX_CONFIG_TEMPLATE.read_text(encoding="utf-8")
+    rendered = template.replace("__UNITAG_NGINX_PORT__", str(port))
+    validate_nginx_config(rendered, port)
+    fallback_path = NGINX_RUNTIME_ROOT / "fallback-nginx.conf"
+    fallback_path.write_text(rendered, encoding="utf-8")
+    return fallback_path
+
+
+def _test_nginx_config(config_path: Path) -> None:
+    subprocess.run(
+        ["nginx", "-t", "-p", f"{NGINX_RUNTIME_ROOT}/", "-c", str(config_path)],
+        check=True,
+    )
+
+
+def select_nginx_config(port: int) -> Path:
+    try:
+        config_path = initialize_nginx_config(port)
+        _test_nginx_config(config_path)
+        return config_path
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print(
+            "nginx persistent configuration rejected; "
+            f"using trusted runtime fallback without modifying it: {exc}",
+            file=sys.stderr,
+        )
+
+    fallback_path = _render_fallback_nginx_config(port)
+    _test_nginx_config(fallback_path)
+    return fallback_path
+
+
 def _terminate(process: subprocess.Popen[bytes], timeout: float = 10.0) -> None:
     if process.poll() is not None:
         return
@@ -99,11 +156,7 @@ def _terminate(process: subprocess.Popen[bytes], timeout: float = 10.0) -> None:
 def run_container(command: Sequence[str], port: int) -> int:
     if not command:
         raise ValueError("OpenClaw command is required")
-    config_path = initialize_nginx_config(port)
-    subprocess.run(
-        ["nginx", "-t", "-p", f"{NGINX_RUNTIME_ROOT}/", "-c", str(config_path)],
-        check=True,
-    )
+    config_path = select_nginx_config(port)
 
     nginx = subprocess.Popen(
         ["nginx", "-p", f"{NGINX_RUNTIME_ROOT}/", "-c", str(config_path), "-g", "daemon off;"]

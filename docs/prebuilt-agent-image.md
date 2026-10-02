@@ -95,6 +95,10 @@ The prebuilt image installs nginx once during `docker build`; container startup 
 - Default container port: `80`
 - Optional fallback: set `UNITAG_NGINX_PORT` on the first start of a fresh state volume, for example `8080`. The persisted config must continue to match that value on later starts.
 
-The supervisor rejects extra includes, `alias`, `proxy_pass`, FastCGI, gRPC, uWSGI, SCGI, dynamic modules and any document root other than the public directory. DockerManager must continue to run the image as `node`, with all capabilities dropped and `no-new-privileges`; it must publish only the configured nginx port rather than arbitrary container ports.
+The supervisor rejects extra includes, `alias`, FastCGI, gRPC, uWSGI, SCGI, dynamic modules and any document root other than the public directory. `proxy_pass` is accepted only for a static literal HTTP target on this container's loopback interface (`127.0.0.1` or `[::1]`) with a valid explicit port. Hostnames, variables, named upstreams, non-loopback addresses, HTTPS targets and URI suffixes are rejected.
+
+If the persistent nginx configuration fails the service policy or `nginx -t`, the supervisor logs the reason and starts nginx from the trusted image template rendered under `/tmp/nginx/`. It does not overwrite the rejected persistent file. The fallback is validated and tested independently; a broken image template remains a fatal startup error rather than being silently ignored.
+
+DockerManager must continue to run the image as `node`, with all capabilities dropped and `no-new-privileges`; it must publish only the configured nginx port rather than arbitrary container ports.
 
 This is a controlled serving policy, not a hard security boundary against hostile code running as the same Unix user. A same-UID OpenClaw tool can replace writable state or bind an exposed port. Hard tenant isolation still belongs at the container boundary: immutable image, fixed published ports, no Docker socket, no added capabilities, and host/network policy. Do not grant `NET_ADMIN`, `NET_BIND_SERVICE`, `privileged`, or a writable host nginx configuration mount.
