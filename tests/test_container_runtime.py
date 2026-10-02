@@ -40,7 +40,7 @@ class ContainerRuntimeTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 container_runtime.resolve_nginx_port(value)
 
-    def test_validate_nginx_config_allows_literal_loopback_http_proxy(self):
+    def test_validate_nginx_config_does_not_apply_a_network_directive_or_proxy_target_blacklist(self):
         valid = self._valid_config(
             "/home/node/.openclaw/workspace/public",
             "/tmp/nginx",
@@ -50,52 +50,36 @@ class ContainerRuntimeTest(unittest.TestCase):
             "disable_symlinks on;",
             "disable_symlinks on;\n"
             "location /api/ { proxy_pass http://127.0.0.1:8788; }\n"
-            "location /admin/ { proxy_pass http://[::1]:8789; }",
+            "location /public/ { proxy_pass https://example.com/api/; }\n"
+            "location /dynamic/ { proxy_pass $backend; }\n"
+            "location /named/ { proxy_pass http://backend; }\n"
+            "location /auth/ { auth_request /authorize; }\n"
+            "location /fcgi/ { fastcgi_pass application:9000; }",
         )
         container_runtime.validate_nginx_config(config, 8080)
 
-    def test_validate_nginx_config_rejects_unsafe_proxy_targets(self):
+    def test_validate_nginx_config_preserves_platform_constraints(self):
         valid = self._valid_config(
             "/home/node/.openclaw/workspace/public",
             "/tmp/nginx",
         )
-        targets = (
-            "http://10.0.0.8:8788",
-            "http://example.com:8788",
-            "http://localhost:8788",
-            "http://backend",
-            "http://127.0.0.1:$port",
-            "$backend",
-            "https://127.0.0.1:8788",
-            "http://127.0.0.1:8788/api/",
-            "http://127.0.0.1:0",
-            "http://127.0.0.1:65536",
-        )
-        for target in targets:
-            with self.subTest(target=target), self.assertRaises(ValueError):
-                container_runtime.validate_nginx_config(
-                    valid.replace("disable_symlinks on;", f"disable_symlinks on; proxy_pass {target};"),
-                    8080,
-                )
-        with self.assertRaises(ValueError):
-            container_runtime.validate_nginx_config(
-                valid.replace(
-                    "disable_symlinks on;",
-                    "disable_symlinks on; proxy_pass http://127.0.0.1:8788",
-                ),
-                8080,
-            )
-
-    def test_validate_nginx_config_preserves_existing_restrictions(self):
-        valid = self._valid_config(
-            "/home/node/.openclaw/workspace/public",
-            "/tmp/nginx",
+        invalid_configs = (
+            valid.replace("include /etc/nginx/mime.types;", "include /etc/nginx/conf.d/*.conf;"),
+            valid.replace("workspace/public", "workspace"),
+            valid.replace("listen 8080;", "listen 8081;"),
+            valid.replace("/tmp/nginx/proxy_temp", "/tmp/proxy_temp"),
+            valid.replace("autoindex off;", "autoindex on;"),
+            valid.replace("disable_symlinks on;", "disable_symlinks off;"),
+            valid.replace(
+                "disable_symlinks on;",
+                "disable_symlinks on;\n"
+                "location /private/ { alias /home/node/.openclaw/; }",
+            ),
         )
         container_runtime.validate_nginx_config(valid, 8080)
-        with self.assertRaises(ValueError):
-            container_runtime.validate_nginx_config(valid + "alias /tmp/files;", 8080)
-        with self.assertRaises(ValueError):
-            container_runtime.validate_nginx_config(valid.replace("workspace/public", "workspace"), 8080)
+        for invalid in invalid_configs:
+            with self.subTest(config=invalid), self.assertRaises(ValueError):
+                container_runtime.validate_nginx_config(invalid, 8080)
 
     def test_initialize_preserves_existing_platform_config(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -137,8 +121,8 @@ class ContainerRuntimeTest(unittest.TestCase):
             template_path.parent.mkdir(parents=True)
             valid = self._valid_config(public_root.as_posix(), runtime_root.as_posix())
             invalid = valid.replace(
-                "disable_symlinks on;",
-                "disable_symlinks on; proxy_pass http://example.com:8788;",
+                "workspace/public",
+                "workspace/private",
             )
             config_path.write_text(invalid, encoding="utf-8")
             template_path.write_text(
@@ -159,7 +143,7 @@ class ContainerRuntimeTest(unittest.TestCase):
 
             self.assertEqual(selected, runtime_root / "fallback-nginx.conf")
             self.assertEqual(config_path.read_text(encoding="utf-8"), invalid)
-            self.assertNotIn("example.com", selected.read_text(encoding="utf-8"))
+            self.assertNotIn("workspace/private", selected.read_text(encoding="utf-8"))
             self.assertIn("trusted runtime fallback", stderr.getvalue())
             run.assert_called_once_with(
                 ["nginx", "-t", "-p", f"{runtime_root}/", "-c", str(selected)],

@@ -16,17 +16,7 @@ NGINX_CONFIG_TEMPLATE = Path("/opt/unitag/nginx/nginx.conf")
 PUBLIC_ROOT = Path("/home/node/.openclaw/workspace/public")
 NGINX_RUNTIME_ROOT = Path("/tmp/nginx")
 DEFAULT_NGINX_PORT = 80
-FORBIDDEN_DIRECTIVES = re.compile(
-    r"^\s*(?:alias|auth_request|dav_methods|fastcgi_pass|grpc_pass|load_module|"
-    r"perl|scgi_pass|ssl_client_certificate|uwsgi_pass)\b",
-    re.IGNORECASE | re.MULTILINE,
-)
-PROXY_PASS_KEYWORD = re.compile(r"(?<![\w-])proxy_pass\b", re.IGNORECASE)
-PROXY_PASS_DIRECTIVE = re.compile(r"(?<![\w-])proxy_pass\s+([^;{}]+);", re.IGNORECASE)
-LOOPBACK_PROXY_TARGET = re.compile(
-    r"http://(?:127\.0\.0\.1|\[::1\]):([0-9]{1,5})",
-    re.IGNORECASE,
-)
+ALIAS_DIRECTIVE = re.compile(r"(?<![\w-])alias\b", re.IGNORECASE)
 
 
 def resolve_nginx_port(value: str | None) -> int:
@@ -42,9 +32,9 @@ def resolve_nginx_port(value: str | None) -> int:
 
 
 def validate_nginx_config(config: str, expected_port: int) -> None:
-    if FORBIDDEN_DIRECTIVES.search(config):
-        raise ValueError("nginx configuration contains a forbidden directive")
-    _validate_proxy_pass_directives(config)
+    uncommented = re.sub(r"#.*$", "", config, flags=re.MULTILINE)
+    if ALIAS_DIRECTIVE.search(uncommented):
+        raise ValueError("nginx alias may not bypass the public workspace root")
 
     includes = re.findall(r"^\s*include\s+([^;]+);", config, re.IGNORECASE | re.MULTILINE)
     if includes != ["/etc/nginx/mime.types"]:
@@ -74,23 +64,6 @@ def validate_nginx_config(config: str, expected_port: int) -> None:
         raise ValueError("nginx runtime files must remain under /tmp/nginx")
     if "disable_symlinks on;" not in config or "autoindex off;" not in config:
         raise ValueError("nginx directory listing and symlink serving must remain disabled")
-
-
-def _validate_proxy_pass_directives(config: str) -> None:
-    uncommented = re.sub(r"#.*$", "", config, flags=re.MULTILINE)
-    keywords = list(PROXY_PASS_KEYWORD.finditer(uncommented))
-    directives = list(PROXY_PASS_DIRECTIVE.finditer(uncommented))
-    if len(keywords) != len(directives):
-        raise ValueError("proxy_pass must be a complete static directive")
-
-    for directive in directives:
-        target = directive.group(1).strip()
-        match = LOOPBACK_PROXY_TARGET.fullmatch(target)
-        if match is None:
-            raise ValueError("proxy_pass may only target a literal container loopback HTTP endpoint")
-        port = int(match.group(1))
-        if port < 1 or port > 65535:
-            raise ValueError("proxy_pass loopback port must be between 1 and 65535")
 
 
 def initialize_nginx_config(port: int) -> Path:

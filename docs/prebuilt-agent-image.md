@@ -95,7 +95,9 @@ The prebuilt image installs nginx once during `docker build`; container startup 
 - Default container port: `80`
 - Optional fallback: set `UNITAG_NGINX_PORT` on the first start of a fresh state volume, for example `8080`. The persisted config must continue to match that value on later starts.
 
-The supervisor rejects extra includes, `alias`, FastCGI, gRPC, uWSGI, SCGI, dynamic modules and any document root other than the public directory. `proxy_pass` is accepted only for a static literal HTTP target on this container's loopback interface (`127.0.0.1` or `[::1]`) with a valid explicit port. Hostnames, variables, named upstreams, non-loopback addresses, HTTPS targets and URI suffixes are rejected.
+The supervisor enforces the platform-owned shape of the configuration: one expected listen port, the declared public workspace root, runtime files under `/tmp/nginx/`, the existing single MIME include, disabled directory listing and disabled symlink serving. `alias` remains prohibited because it can bypass the public workspace root and expose persisted instance files. The supervisor does not maintain a network-directive blacklist or decide which `proxy_pass` targets are reachable. Nginx itself remains responsible for configuration syntax through `nginx -t`.
+
+Network isolation is provided outside this parser by the Docker internal network, host `INPUT`/`FORWARD` firewall policy and the controlled Squid egress path. Custom locations, upstreams and proxy behavior remain an operator responsibility. The retained checks are a platform and file-delivery contract, not a claim that every possible nginx configuration is supported or safe to expose.
 
 If the persistent nginx configuration fails the service policy or `nginx -t`, the supervisor logs the reason and starts nginx from the trusted image template rendered under `/tmp/nginx/`. It does not overwrite the rejected persistent file. The fallback is validated and tested independently; a broken image template remains a fatal startup error rather than being silently ignored.
 
