@@ -1,24 +1,20 @@
 param(
+    [Parameter(Mandatory = $true)][string]$BaseImageReference,
     [Parameter(Mandatory = $true)][string]$TemplateIdentify,
     [Parameter(Mandatory = $true)][string]$ImageTag,
     [string]$TemplateArchive,
-    [string]$OpenClawVersion = "2026.7.1-1",
-    [string]$OpenClawImage = "ghcr.io/openclaw/openclaw@sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf",
-    [string]$AgentManagerVersion = "0.5.0",
     [string]$LayoutProtocolVersion = "2",
-    [string]$LarkSuiteCliVersion = "1.0.93",
-    [string]$WeixinPluginVersion = "2.4.8",
-    [string]$QqBotPluginVersion = "2026.7.1",
-    [string]$FeishuPluginVersion = "2026.7.1",
-    [int]$NginxPort = 80,
-    [string]$DebianMirror = "http://deb.debian.org/debian",
-    [string]$DebianSecurityMirror = "http://deb.debian.org/debian-security"
+    [int]$NginxPort = 80
 )
 
 $ErrorActionPreference = "Stop"
 if ($TemplateIdentify -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $TemplateIdentify -in @('.', '..')) {
     throw "TemplateIdentify must be one safe path segment"
 }
+if ($BaseImageReference -notmatch '^.+(?:@sha256:[0-9a-f]{64}|:[A-Za-z0-9][A-Za-z0-9._-]*)$') {
+    throw "BaseImageReference must be a Docker image tag or immutable sha256 reference"
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $stagedArchive = Join-Path $PSScriptRoot "templates/$TemplateIdentify.zip"
 $sourceArchive = if ([string]::IsNullOrWhiteSpace($TemplateArchive)) { $stagedArchive } else { $TemplateArchive }
@@ -46,29 +42,19 @@ try {
     docker buildx build `
         --platform linux/amd64 `
         --load `
-        --build-arg "OPENCLAW_IMAGE=$OpenClawImage" `
-        --build-arg "OPENCLAW_VERSION=$OpenClawVersion" `
+        --build-arg "UNITAG_AGENT_BASE_IMAGE=$BaseImageReference" `
         --build-arg "TEMPLATE_IDENTIFY=$TemplateIdentify" `
-        --build-arg "AGENT_MANAGER_VERSION=$AgentManagerVersion" `
-        --build-arg "LAYOUT_PROTOCOL_VERSION=$LayoutProtocolVersion" `
-        --build-arg "LARKSUITE_CLI_VERSION=$LarkSuiteCliVersion" `
-        --build-arg "WEIXIN_PLUGIN_VERSION=$WeixinPluginVersion" `
-        --build-arg "QQBOT_PLUGIN_VERSION=$QqBotPluginVersion" `
-        --build-arg "FEISHU_PLUGIN_VERSION=$FeishuPluginVersion" `
-        --build-arg "NGINX_PORT=$NginxPort" `
-        --build-arg "DEBIAN_MIRROR=$DebianMirror" `
-        --build-arg "DEBIAN_SECURITY_MIRROR=$DebianSecurityMirror" `
         --tag $ImageTag `
-        --file (Join-Path $PSScriptRoot "Dockerfile") `
+        --file (Join-Path $PSScriptRoot "Dockerfile.agent") `
         $repoRoot
-    if ($LASTEXITCODE -ne 0) { throw "Docker image build failed" }
+    if ($LASTEXITCODE -ne 0) { throw "Docker Agent image build failed" }
 
     & (Join-Path $PSScriptRoot "validate-prebuilt-image.ps1") `
         -ImageReference $ImageTag `
         -TemplateIdentify $TemplateIdentify `
         -LayoutProtocolVersion $LayoutProtocolVersion `
         -NginxPort $NginxPort
-    if ($LASTEXITCODE -ne 0) { throw "Prebuilt image runtime validation failed" }
+    if ($LASTEXITCODE -ne 0) { throw "Agent image runtime validation failed" }
 }
 finally {
     if ($mustStage) {

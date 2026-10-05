@@ -12,15 +12,25 @@ python3 scripts/agentctl.py add-agent \
 
 # Container runtime: the model key is supplied only after the writable volume is mounted.
 printf '%s' "$MODEL_KEY" | python3 scripts/agentctl.py configure-instance \
-  --template-name unipay-claw-base \
   --model-key-stdin
 ```
 
 `add-agent` expands `template.yaml` multi-agent declarations and continues to use the
 official `openclaw agents add --non-interactive --json` command. `configure-instance`
-requires every declared Agent to already exist and never registers one implicitly.
+reads configured Agents and workspace paths from `openclaw.json`. It only applies
+runtime model, Gateway, tool, and workspace-policy settings; it never reads a
+template archive, registers an Agent, or populates a workspace. Legacy
+`--template-name` and `--agent-zip` arguments remain accepted but are ignored.
 The compatibility `create-instance` command uses the same internal registration and
 configuration stages and continues to register missing Agents.
+All three commands accept `--base-url https://server-001.web.dolaio.cn/`. The value
+must be an HTTP(S) site root without a path, query, fragment, or credentials; it is
+normalized with a trailing slash and written into the managed runtime policy for
+every affected Agent workspace.
+For an already-running container, `add-agent` can optionally receive
+`--template-zip-url` and `--template-zip-sha256`. The URL must use HTTPS; the
+archive is streamed into the persistent template directory, validated, and
+atomically replaces the local `{template_name}.zip` only for a successful add.
 
 Build assets are under `container-image/`. The build command accepts the template
 zip directly and always runs the DockerManager-compatible runtime validator:
@@ -156,6 +166,7 @@ python3 scripts/agentctl.py --version
 - 如果当前商店没有官方 `openai/gpt-image-2`，图片使用的 `openai` provider 特例回退到同环境的 `/aigateway/v1`，不添加 `test` 路径；其他 provider 仍使用当前商店 `baseUrl`
 - provider ID 为 `openai` 时固定使用 OpenClaw 的 `openai-responses` API 适配器；其他 OpenAI-compatible provider 保留模型目录声明的 API 类型，默认回退仍为 `openai-completions`
 - 初始化会向各 agent workspace 的 `AGENTS.md` 写入精简的受管运行规则，包括命令安全、IPv4 公网附件、`nginx-delivery` 交付要求和图片默认质量；`image_generate` 默认使用 `quality: "low"`，可通过 `--image-quality low|medium|high|auto` 调整
+- `create-instance` 可选传入 `--base-url https://server-001.web.dolaio.cn/`；传入后，受管运行规则会优先声明当前主机的公网文件根地址，并要求 `MEDIA:` 将 `/var/www/html/` 下的文件映射为该域名下的公网 URL；未传时保持原有规则不变
 - 内置公共 Skill 会同步到 `~/.openclaw/skills/`；当前包含 `nginx-delivery`，用于将明确公开的交付文件、网页和静态资源部署到 nginx、更新索引并返回经过 IPv4 验证的公网 URL
 - 模型 `input` 只会写入 npm stable OpenClaw `2026.7.1-2` 支持的 `text`、`image`；`video`、`audio` 和未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
 - `agents.defaults.models` 会按当前拉取到的模型重建
@@ -292,8 +303,10 @@ python3 scripts/agentctl.py create-instance \
 - 批量追加完成后会写入 `tools.agentToAgent.enabled = true`，并把 `main`、本批次 agent 和多 agent 团队成员合并进
   `tools.agentToAgent.allow`；同时设置 `tools.sessions.visibility = all`
 - 批量追加完成后会为本批次全部 workspace 同步与 `create-instance` 相同的受管运行规则和内置公共 Skill；默认图片质量为 `low`
+- `add-agents` 同样支持可选 `--base-url https://server-001.web.dolaio.cn/`；传入后会为本批次全部 workspace 写入与 `create-instance` 相同的公网文件根地址和 `MEDIA:` 映射规则，未传时保持原有规则不变
+- 每个 `--agents` JSON 条目可选传入 `template_zip_url` 和 `template_zip_sha256`；下载只接受 HTTPS，落盘前会校验大小、SHA-256（传入时）以及模板归档安全规则
 - 批量追加完成后不额外执行 `openclaw gateway restart`
-- 返回体会显式给出 `restart_required = false` 和空的 `post_batch_actions`
+- 实际新增至少一个 Agent 时返回 `restart_required = true`，全部为已存在 Agent 而跳过时返回 `false`；执行方据此决定是否重启 Gateway
 
 ### 远程执行
 
@@ -309,6 +322,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-agents \
 可选参数：
 
 - `--workspace-root`
+- `--base-url`
 - `--config-path`
 - `--openclaw-bin`
 - `--project-dir`
@@ -337,7 +351,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-agents \
     "requested_count": 2,
     "added_count": 1,
     "skipped_count": 1,
-    "restart_required": false,
+    "restart_required": true,
     "post_batch_actions": [],
     "agents": [
       {

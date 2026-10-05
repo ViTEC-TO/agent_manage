@@ -105,7 +105,7 @@ class FailingPopulateManager(InstanceManagerV2):
 
 
 class FailingWorkspaceDefaultsManager(InstanceManagerV2):
-    def _configure_workspace_defaults(self, workspaces, *, quality):
+    def _configure_workspace_defaults(self, workspaces, *, quality, base_url=None):
         raise RuntimeError("workspace defaults failed")
 
 
@@ -735,6 +735,47 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertIn("All delivered files and `MEDIA:` attachments", written)
         self.assertIn("Public file, web, and static deliverables", written)
 
+    def test_runtime_policy_adds_public_base_url_rules_only_when_provided(self):
+        runner = FakeRunner()
+        manager = InstanceManagerV2(runner)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+
+            without_base_url = manager._configure_runtime_policy(
+                [workspace],
+                quality="low",
+            )
+            old_policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+
+            with_base_url = manager._configure_runtime_policy(
+                [workspace],
+                quality="low",
+                base_url="https://server-001.web.dolaio.cn/",
+            )
+            new_policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIsNone(without_base_url["base_url"])
+        self.assertNotIn("public file base URL", old_policy)
+        self.assertEqual(
+            with_base_url["base_url"],
+            "https://server-001.web.dolaio.cn/",
+        )
+        self.assertIn(
+            "This host's public file base URL is "
+            "`https://server-001.web.dolaio.cn/`.",
+            new_policy,
+        )
+        self.assertIn(
+            "`MEDIA:https://server-001.web.dolaio.cn/<relative-path>`",
+            new_policy,
+        )
+        self.assertLess(
+            new_policy.index("This host's public file base URL"),
+            new_policy.index("Preserve existing and unrelated changes"),
+        )
+
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(
             responses={
@@ -788,7 +829,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "web": {
                             "search": {
                                 "region": "us",
-                            }
+                            },
+                            "fetch": {
+                                "maxBytes": 1024,
+                            },
                         },
                     },
                     "models": {
@@ -839,11 +883,14 @@ class CreateInstanceV2Test(unittest.TestCase):
                     template_name="base",
                     model_key="test-key",
                     model="openai/gpt-5",
+                    base_url="https://server-001.web.dolaio.cn/",
                     workspace_root=str(workspace_root),
                 )
             )
 
             self.assertTrue(result["ok"])
+            self.assertTrue(result["restart_required"])
+            self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
             self.assertEqual(result["additional_agents"], [])
             self.assertIsInstance(result["gateway_token"], str)
             self.assertGreaterEqual(len(result["gateway_token"]), 40)
@@ -860,6 +907,10 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertIn("every delivered file", global_skill.read_text(encoding="utf-8"))
             runtime_policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
             self.assertEqual(runtime_policy.count(manager.RUNTIME_POLICY_START), 1)
+            self.assertIn(
+                "`MEDIA:https://server-001.web.dolaio.cn/<relative-path>`",
+                runtime_policy,
+            )
             for expected_rule in [
                 "Preserve existing and unrelated changes",
                 "after two failures for the same reason",
@@ -910,7 +961,10 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(saved_config["tools"]["exec"]["security"], "full")
             self.assertEqual(saved_config["tools"]["exec"]["timeout"], 30)
             self.assertEqual(saved_config["tools"]["web"]["search"], {"enabled": False})
-            self.assertEqual(saved_config["tools"]["web"]["fetch"], {"enabled": True})
+            self.assertEqual(
+                saved_config["tools"]["web"]["fetch"],
+                {"enabled": True, "useTrustedEnvProxy": True, "maxBytes": 1024},
+            )
             self.assertEqual(
                 saved_config["tools"]["agentToAgent"],
                 {
@@ -2056,14 +2110,16 @@ class CreateInstanceV2Test(unittest.TestCase):
                         ),
                     ],
                     workspace_root=str(tmp_path / "data"),
+                    base_url="https://server-001.web.dolaio.cn/",
                 )
             )
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["added_count"], 2)
             self.assertEqual(result["skipped_count"], 0)
-            self.assertFalse(result["restart_required"])
+            self.assertTrue(result["restart_required"])
             self.assertEqual(result["post_batch_actions"], [])
+            self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
             self.assertEqual(
                 (tmp_path / "data" / "base" / "SOUL.md").read_text(encoding="utf-8"),
                 "base soul\n",
@@ -2117,6 +2173,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                 policy = policy_path.read_text(encoding="utf-8")
                 self.assertIn("`nginx-delivery` Skill", policy)
                 self.assertIn('quality: "low"', policy)
+                self.assertIn(
+                    "`MEDIA:https://server-001.web.dolaio.cn/<relative-path>`",
+                    policy,
+                )
             self.assertTrue((tmp_path / "skills" / "nginx-delivery" / "SKILL.md").is_file())
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(
@@ -2286,6 +2346,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["added_count"], 1)
             self.assertEqual(result["skipped_count"], 1)
+            self.assertTrue(result["restart_required"])
             self.assertEqual(
                 (tmp_path / "data" / "base" / "SOUL.md").read_text(encoding="utf-8"),
                 "base soul\n",
@@ -2319,6 +2380,123 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertIn("agents.add[base]", step_names)
             self.assertIn("workspace.populate[base]", step_names)
             self.assertIn("agent exists, skip add: base", runner.logs)
+
+    def test_add_agents_pure_skip_does_not_require_restart(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            template_root.mkdir(parents=True)
+            self._write_archive(template_root / "base.zip", {"SOUL.md": "base soul\n"})
+            config_path = tmp_path / "openclaw.json"
+            config_path.write_text(
+                json.dumps({"agents": {"list": [{"id": "base"}]}}),
+                encoding="utf-8",
+            )
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            result = manager.add_agents(
+                AddAgentsRequest(
+                    agents=[AddAgentRequest(agent_name="base")],
+                    workspace_root=str(tmp_path / "data"),
+                )
+            )
+
+            self.assertEqual(result["added_count"], 0)
+            self.assertEqual(result["skipped_count"], 1)
+            self.assertFalse(result["restart_required"])
+
+    def test_add_agents_restores_existing_template_directory_after_failure(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            existing_template = template_root / "base"
+            existing_template.mkdir(parents=True)
+            (existing_template / "old.txt").write_text("old", encoding="utf-8")
+            self._write_archive(template_root / "base.zip", {"new.txt": "new"})
+            config_path = tmp_path / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"list": []}}), encoding="utf-8")
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            with patch.object(
+                manager,
+                "_load_template_manifest_for_timed_step",
+                side_effect=RuntimeError("manifest failed"),
+            ), self.assertRaises(RuntimeError):
+                manager.add_agents(
+                    AddAgentsRequest(
+                        agents=[AddAgentRequest(agent_name="base")],
+                        workspace_root=str(tmp_path / "data"),
+                    )
+                )
+
+            self.assertEqual((existing_template / "old.txt").read_text(encoding="utf-8"), "old")
+            self.assertFalse((existing_template / "new.txt").exists())
+
+    def test_add_agents_rolls_back_batch_when_late_configuration_fails(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            existing_template = template_root / "base"
+            existing_template.mkdir(parents=True)
+            (existing_template / "old-template.txt").write_text("old", encoding="utf-8")
+            archive_path = template_root / "base.zip"
+            self._write_archive(archive_path, {"old-archive.txt": "old archive"})
+            replacement_archive = tmp_path / "downloaded.zip"
+            self._write_archive(replacement_archive, {"new-template.txt": "new"})
+            config_path = tmp_path / "openclaw.json"
+            original_config = json.dumps({"agents": {"list": []}}, indent=2)
+            config_path.write_text(original_config, encoding="utf-8")
+            workspace = tmp_path / "data" / "base"
+            manager = FailingWorkspaceDefaultsManager(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            with patch(
+                "agent_manage.template_download.download_template_archive",
+                return_value=replacement_archive,
+            ), self.assertRaises(RuntimeError):
+                manager.add_agents(
+                    AddAgentsRequest(
+                        agents=[
+                            AddAgentRequest(
+                                agent_name="base",
+                                template_zip_url="https://example.test/base.zip",
+                            )
+                        ],
+                        workspace_root=str(tmp_path / "data"),
+                    )
+                )
+
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(archive.namelist(), ["old-archive.txt"])
+                self.assertEqual(archive.read("old-archive.txt"), b"old archive")
+            self.assertEqual(
+                (existing_template / "old-template.txt").read_text(encoding="utf-8"),
+                "old",
+            )
+            self.assertFalse((existing_template / "new-template.txt").exists())
+            self.assertFalse(workspace.exists())
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original_config)
+            self.assertIn(
+                ["openclaw", "agents", "delete", "base", "--force", "--json"],
+                runner.calls,
+            )
 
     def test_add_agents_appends_agent_to_existing_agent_to_agent_allow(self):
         runner = FakeRunner()
@@ -3717,30 +3895,28 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual([call[3] for call in add_calls], ["team", "reviewer"])
             self.assertEqual(result["added_count"], 2)
 
-    def test_configure_instance_never_adds_missing_prebuilt_agent(self):
+    def test_configure_instance_rejects_missing_prebuilt_agent_without_using_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            template_root = root / "templates"
-            template_root.mkdir()
-            self._write_archive(template_root / "base.zip", {"AGENTS.md": "base\n"})
             runner = FakeRunner()
             self._write_host_config(root / "openclaw.json")
             manager = InstanceManagerV2(
                 runner,
-                template_root=str(template_root),
                 config_path=str(root / "openclaw.json"),
             )
 
-            with self.assertRaises(RuntimeError) as raised:
+            with patch.object(manager, "_prepare_template_dir") as prepare, self.assertRaises(
+                ValueError
+            ) as raised:
                 manager.configure_instance(
                     CreateInstanceRequest(
-                        template_name="base",
                         model_key="runtime-secret",
-                        workspace_root=str(root / "data"),
+                        agent_zip=str(root / "missing.zip"),
                     )
                 )
 
-            self.assertIn("Prebuilt agent is missing", str(raised.exception))
+            self.assertIn("No prebuilt agents are configured", str(raised.exception))
+            prepare.assert_not_called()
             self.assertFalse(
                 any(call[:3] == ["openclaw", "agents", "add"] for call in runner.calls)
             )
@@ -3748,16 +3924,6 @@ class CreateInstanceV2Test(unittest.TestCase):
     def test_configure_instance_uses_prebuilt_multi_agent_seed_without_add(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            template_root = root / "templates"
-            template_root.mkdir()
-            self._write_archive(
-                template_root / "team.zip",
-                {
-                    "template.yaml": "copyMode: multi_agent_template\n",
-                    "AGENTS.md": "primary\n",
-                    "agents/reviewer/AGENTS.md": "reviewer\n",
-                },
-            )
             config_path = root / "openclaw.json"
             self._write_host_config(
                 config_path,
@@ -3771,25 +3937,85 @@ class CreateInstanceV2Test(unittest.TestCase):
                 },
             )
             runner = FakeRunner()
+            for agent_name in ("team", "reviewer"):
+                workspace = root / "data" / agent_name
+                workspace.mkdir(parents=True)
+                (workspace / "AGENTS.md").write_text("prebuilt\n", encoding="utf-8")
             manager = InstanceManagerV2(
                 runner,
-                template_root=str(template_root),
                 config_path=str(config_path),
             )
 
             result = manager.configure_instance(
                 CreateInstanceRequest(
-                    template_name="team",
                     model_key="runtime-secret",
-                    workspace_root=str(root / "data"),
+                    base_url="https://server-001.web.dolaio.cn",
+                    agent_zip=str(root / "missing.zip"),
                 )
             )
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["mode"], "configured")
+            self.assertTrue(result["restart_required"])
+            self.assertEqual(result["agent_names"], ["team", "reviewer"])
+            self.assertNotIn("archive_path", result)
+            self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
+            self.assertEqual(
+                json.loads(config_path.read_text(encoding="utf-8"))["tools"]["agentToAgent"]["allow"],
+                ["main", "team", "reviewer"],
+            )
+            for agent_name in ("team", "reviewer"):
+                policy = (root / "data" / agent_name / "AGENTS.md").read_text(encoding="utf-8")
+                self.assertIn("`https://server-001.web.dolaio.cn/`", policy)
+                self.assertIn("prebuilt", policy)
             self.assertFalse(
                 any(call[:3] == ["openclaw", "agents", "add"] for call in runner.calls)
             )
+            serialized_result = json.dumps(result, ensure_ascii=False)
+            self.assertNotIn("runtime-secret", serialized_result)
+            self.assertLess(len(serialized_result.encode("utf-8")), 512 * 1024)
+            self.assertTrue(all("elapsed_ms" in step for step in result["steps"]))
+
+    def test_configure_instance_preserves_gateway_token_on_retry_without_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "openclaw.json"
+            self._write_host_config(config_path, {
+                "agents": {"list": [{"id": "base", "workspace": str(root / "data" / "base")}]},
+                "gateway": {"auth": {"mode": "token", "token": "existing-token"}},
+            })
+            workspace = root / "data" / "base"
+            workspace.mkdir(parents=True)
+            manager = InstanceManagerV2(FakeRunner(), config_path=str(config_path))
+
+            request = CreateInstanceRequest(
+                template_name="unrelated-template",
+                model_key="runtime-secret",
+                agent_zip=str(root / "missing.zip"),
+            )
+            first = manager.configure_instance(request)
+            second = manager.configure_instance(request)
+
+            self.assertEqual(first["gateway_token"], "existing-token")
+            self.assertEqual(second["gateway_token"], "existing-token")
+            self.assertTrue(second["gateway_token_preserved"])
+            self.assertFalse(any("template." in step["step"] for step in second["steps"]))
+
+    def test_configure_instance_rolls_back_config_when_workspace_policy_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "openclaw.json"
+            self._write_host_config(config_path, {
+                "agents": {"list": [{"id": "base", "workspace": str(root / "missing-workspace")}]},
+            })
+            original_config = config_path.read_bytes()
+            manager = InstanceManagerV2(FakeRunner(), config_path=str(config_path))
+
+            with self.assertRaises(RuntimeError) as raised:
+                manager.configure_instance(CreateInstanceRequest(model_key="runtime-secret"))
+
+            self.assertIn("Workspace not found", str(raised.exception))
+            self.assertEqual(config_path.read_bytes(), original_config)
 
     def _write_archive(self, archive_path: Path, files):
         with zipfile.ZipFile(archive_path, "w") as archive:

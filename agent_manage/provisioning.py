@@ -591,6 +591,7 @@ class ProvisioningMixin:
                 "exec_security": "full",
                 "web_search_enabled": False,
                 "web_fetch_enabled": True,
+                "web_fetch_use_trusted_env_proxy": True,
                 "agent_to_agent_enabled": True,
                 "agent_to_agent_allow": normalized_agent_names,
                 "sessions_visibility": "all",
@@ -606,7 +607,9 @@ class ProvisioningMixin:
         exec_config["security"] = "full"
         web = tools.setdefault("web", {})
         web["search"] = {"enabled": False}
-        web["fetch"] = {"enabled": True}
+        fetch = web.setdefault("fetch", {})
+        fetch["enabled"] = True
+        fetch["useTrustedEnvProxy"] = True
         agent_to_agent = tools.setdefault("agentToAgent", {})
         agent_to_agent["enabled"] = True
         agent_to_agent["allow"] = self._merge_agent_to_agent_allow(
@@ -632,6 +635,7 @@ class ProvisioningMixin:
                 "exec_security": "full",
                 "web_search_enabled": False,
                 "web_fetch_enabled": True,
+                "web_fetch_use_trusted_env_proxy": True,
                 "agent_to_agent_enabled": True,
                 "agent_to_agent_allow": agent_to_agent["allow"],
                 "sessions_visibility": "all",
@@ -643,6 +647,7 @@ class ProvisioningMixin:
             "exec_security": "full",
             "web_search_enabled": False,
             "web_fetch_enabled": True,
+            "web_fetch_use_trusted_env_proxy": True,
             "agent_to_agent_enabled": True,
             "agent_to_agent_allow": agent_to_agent["allow"],
             "sessions_visibility": "all",
@@ -653,9 +658,14 @@ class ProvisioningMixin:
         workspaces: List[Path],
         *,
         quality: str,
+        base_url: str | None = None,
     ) -> Dict[str, object]:
         skills_result = self._install_common_skills(self._builtin_common_skill_sources())
-        policy_result = self._configure_runtime_policy(workspaces, quality=quality)
+        policy_result = self._configure_runtime_policy(
+            workspaces,
+            quality=quality,
+            base_url=base_url,
+        )
         return {
             **policy_result,
             "common_skills": skills_result,
@@ -666,14 +676,26 @@ class ProvisioningMixin:
         workspaces: List[Path],
         *,
         quality: str,
+        base_url: str | None = None,
     ) -> Dict[str, object]:
         resolved_quality = normalize_image_quality(quality)
+
+        public_url_rules = []
+        if base_url:
+            public_url_rules = [
+                f"- This host's public file base URL is `{base_url}`.",
+                "- When using `MEDIA:`, first publish the local file under "
+                f"`/var/www/html/`, then return its corresponding public URL as "
+                f"`MEDIA:{base_url}<relative-path>`. Never use a local filesystem path, "
+                "`localhost`, a loopback address, or an IPv6-only URL in `MEDIA:`.",
+            ]
 
         policy_block = "\n".join(
             [
                 self.RUNTIME_POLICY_START,
                 "## Runtime rules",
                 "",
+                *public_url_rules,
                 "- Preserve existing and unrelated changes; make only necessary changes and avoid destructive or system-wide actions unless explicitly authorized.",
                 "- Run blocking commands separately with timeouts; bound network retries, prefer IPv4, and diagnose or change approach after two failures for the same reason.",
                 "- Never claim unperformed verification; report validation gaps and risks, and inspect final diffs for temporary files, debug code, secrets, or unintended changes.",
@@ -717,6 +739,7 @@ class ProvisioningMixin:
             configured.append(str(policy_path))
         return {
             "quality": resolved_quality,
+            "base_url": base_url,
             "policy_files": configured,
         }
 
@@ -742,6 +765,7 @@ class ProvisioningMixin:
         rollback_on_fail: bool,
         step_scope: Optional[str],
         require_existing_agent: bool = False,
+        defer_template_dir_commit: bool = False,
     ) -> Dict[str, object]:
         workspace_existed_before = workspace.exists()
         template_dir_existed_before = template_dir.exists()
@@ -751,6 +775,7 @@ class ProvisioningMixin:
         created_agent = False
         started_template_prepare = False
         created_workspace = False
+        preserved_template_dir: Optional[Path] = None
 
         try:
             self._run_timed_step(
@@ -759,6 +784,15 @@ class ProvisioningMixin:
                 lambda: self._inspect_template_archive(archive_path),
             )
             started_template_prepare = True
+            if template_dir_existed_before and not self.runner.dry_run:
+                preserved_template_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{template_dir.name}.provision-backup-",
+                        dir=str(template_dir.parent),
+                    )
+                )
+                preserved_template_dir.rmdir()
+                template_dir.replace(preserved_template_dir)
             self._run_timed_step(
                 steps,
                 self._scoped_step_name("template.prepare", step_scope),
@@ -849,6 +883,9 @@ class ProvisioningMixin:
                     and workspace.exists()
                     and not workspace_result.get("skipped", False)
                 )
+            if preserved_template_dir is not None and not defer_template_dir_commit:
+                shutil.rmtree(preserved_template_dir)
+                preserved_template_dir = None
             return {
                 "created_agent": created_agent,
                 "started_template_prepare": started_template_prepare,
@@ -856,6 +893,7 @@ class ProvisioningMixin:
                     not template_dir_existed_before and template_dir.exists()
                 ),
                 "created_workspace": created_workspace,
+                "preserved_template_dir": preserved_template_dir,
             }
         except Exception as exc:
             rollback_steps: List[Dict[str, object]] = []
@@ -872,6 +910,17 @@ class ProvisioningMixin:
                     self._run_timed_rollback_step(
                         rollback_steps, lambda: self._safe_purge_template_dir(template_dir)
                     )
+            if preserved_template_dir is not None and preserved_template_dir.exists():
+                if template_dir.exists():
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_template_dir(template_dir)
+                    )
+                self._run_timed_rollback_step(
+                    rollback_steps,
+                    lambda: self._safe_restore_template_dir(
+                        preserved_template_dir, template_dir
+                    ),
+                )
             raise RuntimeError(
                 json.dumps(
                     {
@@ -1080,3 +1129,15 @@ class ProvisioningMixin:
             return {"step": "rollback.template.purge", "result": {"deleted": True, "path": str(template_dir)}}
         except Exception as exc:
             return {"step": "rollback.template.purge", "error": str(exc)}
+
+    def _safe_restore_template_dir(
+        self, backup_dir: Path, template_dir: Path
+    ) -> Dict[str, object]:
+        try:
+            backup_dir.replace(template_dir)
+            return {
+                "step": "rollback.template.restore",
+                "result": {"restored": True, "path": str(template_dir)},
+            }
+        except Exception as exc:
+            return {"step": "rollback.template.restore", "error": str(exc)}
