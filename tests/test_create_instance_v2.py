@@ -500,12 +500,21 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(result["providers"]["dolaio"]["api"], "openai-completions")
 
     def test_generated_model_config_validates_with_installed_openclaw(self):
-        openclaw_bin = shutil.which("openclaw")
+        explicit_test_bin = os.environ.get("AGENT_MANAGE_TEST_OPENCLAW_BIN")
+        openclaw_bin = explicit_test_bin or shutil.which("openclaw")
         homebrew_openclaw = Path("/opt/homebrew/bin/openclaw")
         if openclaw_bin is None and homebrew_openclaw.is_file():
             openclaw_bin = str(homebrew_openclaw)
         if openclaw_bin is None:
             self.skipTest("openclaw is not installed")
+        version = subprocess.run(
+            [openclaw_bin, "--version"], text=True, capture_output=True,
+            timeout=30, check=False,
+        )
+        if version.returncode != 0 or "2026.7.1-2" not in version.stdout:
+            if explicit_test_bin:
+                self.fail("AGENT_MANAGE_TEST_OPENCLAW_BIN must point to server target OpenClaw 2026.7.1-2")
+            self.skipTest("Server compatibility targets OpenClaw 2026.7.1-2; set AGENT_MANAGE_TEST_OPENCLAW_BIN to verify it")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)

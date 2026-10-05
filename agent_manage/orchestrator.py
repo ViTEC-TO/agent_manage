@@ -13,12 +13,16 @@ from .model_management import ModelManagementMixin
 from .models import AddAgentsRequest, CreateInstanceRequest
 from .provisioning import ProvisioningMixin
 from .settings import normalize_image_quality, normalize_public_base_url, normalize_shop
+from .skill_management import SkillManagementMixin
+from .refresh_management import RefreshManagementMixin
 
 
 class InstanceManagerV2(
     ChannelManagementMixin,
     ModelManagementMixin,
     GatewayManagementMixin,
+    SkillManagementMixin,
+    RefreshManagementMixin,
     ProvisioningMixin,
     ManagerCore,
 ):

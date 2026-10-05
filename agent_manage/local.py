@@ -45,6 +45,7 @@ class LocalRunner:
         args: Sequence[str],
         timeout: Optional[float] = None,
         stream_output: bool = False,
+        env_overrides: Optional[dict[str, str]] = None,
     ) -> CommandResult:
         argv = list(args)
         command_text = " ".join(shlex.quote(part) for part in argv)
@@ -61,6 +62,8 @@ class LocalRunner:
             )
 
         env = self._command_env()
+        if env_overrides:
+            env.update(env_overrides)
         if stream_output:
             return self._run_streaming(argv, command_text, env)
 

@@ -21,6 +21,8 @@ python3 scripts/agentctl.py --version
 - `settings.py`：模型环境、默认商店和 URL 构造的唯一来源
 - `model_management.py`：模型目录读取、过滤、路由和 OpenClaw 模型配置
 - `provisioning.py`：模板解压、workspace、依赖、公共 Skill 和运行规则
+- `skill_management.py`：独立安装单个 agent 或当前环境的公共 Skill
+- `refresh_management.py`：模型目录刷新、模板版本/基线、冲突检测和备份回滚
 - `template_safety.py`：模板名称、路径边界和压缩包解压安全校验
 - `channel_management.py`：Telegram、飞书和微信渠道管理
 - `gateway_management.py`：Gateway 状态、鉴权、重启和 agent 发现
@@ -38,6 +40,101 @@ python3 scripts/agentctl.py --version
 - `create-instance` 默认模板目录为 `~/template`；`--local` 模式默认使用
   `~/.openclaw/templates`
 
+## add-skill
+
+独立安装一个 Skill，无需重新执行创建实例流程。必须在 `--agent <agent_id>` 和
+`--common` 中选择一个范围，在 `--skill-dir` 和 `--skill-zip` 中选择一个来源。
+
+```bash
+# 给已有 agent 添加私有 Skill（按配置中该 agent 的实际 workspace 定位）
+python3 scripts/agentctl.py add-skill --agent demo --skill-dir /path/to/weather
+
+# 给当前 OpenClaw 环境添加所有 agent 共用的 Skill
+python3 scripts/agentctl.py add-skill --common --skill-dir /path/to/weather
+
+# 从 ZIP 安装；同名 Skill 已存在时，明确指定整体替换
+python3 scripts/agentctl.py add-skill --agent demo --skill-zip /path/to/weather.zip --replace
+
+# 用自定义配置文件定位另一套 OpenClaw 环境的公共目录
+python3 scripts/agentctl.py --config-path /path/to/environment/openclaw.json add-skill \
+  --common --skill-dir /path/to/weather
+
+# 预览目标和检查来源，不写入安装目录
+python3 scripts/agentctl.py --dry-run add-skill --common --skill-dir /path/to/weather
+```
+
+- 私有 Skill 安装到 `<workspace>/skills/<skill_name>/`，workspace 非空也可以添加。
+  agent 和 workspace 必须已存在；从配置读取实际路径，不猜测 `~/data/<agent_id>`。
+  `main` 可使用 `agents.defaults.workspace`；其他 agent 需在 `agents.list` 中配置 workspace。
+- 公共 Skill 安装到 `<config_path 所在目录>/skills/<skill_name>/`，默认是
+  `~/.openclaw/skills/<skill_name>/`。范围是当前 OpenClaw 环境，不涉及其他环境或公网发布。
+- 来源目录必须包含 `SKILL.md`，其脚本、资源、引用文件一起复制；来源保持不变。
+  ZIP 支持根目录直接放 `SKILL.md`，或仅包含一个带 `SKILL.md` 的 Skill 目录。
+  默认名称取来源目录名；ZIP 根目录模式取 ZIP 文件名（去掉扩展名）。
+  可用 `--skill-name <名称>` 指定目标目录名，该参数不会改写 `SKILL.md` 的内容。
+- 同名目录默认返回冲突；`--replace` 会整体替换，删除旧版本遗留文件。
+  先完整复制到临时目录，再切换目标；复制或切换失败时保留原有 Skill。
+- 拒绝路径穿越、Skill 内的符号链接和链接目标目录；不执行 Skill 脚本或自动安装依赖。
+- 不修改 OpenClaw 配置、不自动重启 Gateway。成功表示文件已安装，不保证当前会话已加载。
+  返回 `scope`、`agent_name`、`skill_name`、`source`、`destination`、`config_path`、
+  `replaced`、`skipped`、`gateway_restarted: false`、`activation_verified: false`。
+- `--dry-run` 会校验实际来源和目标；ZIP 会解压到临时目录校验，结束后清理。
+
+## refresh-agent
+
+刷新已存在的 agent，默认同时刷新模型目录和模板文件。模型目录和公共 Skill
+作用于当前整个 OpenClaw 环境；私有模板文件作用于指定 agent 的实际 workspace。
+兼容目标沿用服务器的 OpenClaw `2026.7.1-2`，保留该版 `imageGenerationModel` 配置，
+不为本机新版迁移图片模型字段。集成校验可通过 `AGENT_MANAGE_TEST_OPENCLAW_BIN` 指向这一版本。
+
+```bash
+# 先预览差异、冲突和目标版本，不写入实例
+python3 scripts/agentctl.py --dry-run refresh-agent --agent demo \
+  --template-dir /path/to/new-template
+
+# 刷新模型和模板；重启 Gateway 并检查 RPC
+python3 scripts/agentctl.py refresh-agent --agent demo \
+  --agent-zip /path/to/demo.zip --restart
+
+# 只刷新环境的模型目录
+python3 scripts/agentctl.py refresh-agent --agent demo --models-only --restart
+
+# 只升级模板，明确覆盖已经检查过的冲突文件；记忆仍保留
+python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
+  --template-dir /path/to/new-template --replace-modified
+```
+
+- 模板必须有 `template.yaml.version`。来源支持本地目录或 ZIP，远端发布物由上层下载后传入。
+  未指定来源时，使用 `--template-root` 下的 `<template_name>.zip`，不存在则用同名目录。
+  模板名称取 `--template-name`、已记录的模板名称、agent id，依次回退。
+  本地创建模式的模板请显式传入 `--template-root ~/.openclaw/templates` 或来源路径。
+- `--models-only` 和 `--template-only` 互斥；模型刷新沿用已配置的 Dola 环境、商店和密钥/SecretRef，
+  保留自定义 provider、模型别名、默认模型/回退、agent 覆盖、工具权限、渠道、绑定和 Gateway Token。
+  新目录删除了仍在使用的模型，或与自定义 provider 重名时，中止刷新。
+- 模板按文件比较「旧基线 / 当前实例 / 新模板」。更新未修改的模板文件，删除新版中移除的受管文件，
+  保留用户额外添加的文件。模板未变化的用户自定义保留；双方都变动时返回冲突，默认整次不执行。
+  `--replace-modified` 允许备份后替换冲突文件。
+- 首次刷新没有可信的旧版本，`version_before` 为 `null`；不会把缓存模板的版本当作已安装版本。
+  已有文件与新模板不同会冲突。成功刷新后，记录模板名称、实际应用的版本、文件哈希/权限和独立基线。
+  现有 `create-instance` 流程尚不建立此刷新基线，首次刷新按上述规则接管。
+  对 `x.y.z` 数字版本拒绝降级，防止旧缓存把已升级的实例刷回旧版本。
+- `MEMORY.md`、`memory/`、`USER.md`、`TOOLS.md`、会话、凭据和 `.env` 始终排除，
+  即使使用覆盖参数或实例中缺失，也不从模板补回。保留 `AGENTS.md` 中现有平台运行规则块。
+  模板版本知识和操作流程应放在 Skill / references 中。
+- 简单备份保存在 `<config 目录>/agent-manage/backups/<job_id>/`：完整旧配置、受影响文件、旧版本状态、
+  记录原路径/存在性/哈希/权限的 `manifest.json`。新模板基线放在同一 job 的 `baseline/`，
+  当前版本索引为 `agent-manage/agents/<agent_id>.json`。目录权限 `0700`，备份文件 `0600`。
+  成功备份暂时保留，不自动清理；这是刷新操作备份，系统备份另行规划。
+- 写入前使用本机 `openclaw config validate` 校验候选配置。写入或重启检查失败时自动恢复旧配置、
+  旧文件/版本记录并移除本次新增文件；结果报告 `rollback_ok`、备份位置及运行态恢复情况。
+  环境锁防止多个刷新任务并发；发现配置或受影响文件在准备期间被改变会中止。
+- 默认不重启，返回 `restart_required` 和 `activation_verified: false`。
+  `--restart` 重启当前环境 Gateway 后要求 RPC 检查成功；成功只确认 Gateway 可达，
+  不代表新 Skill 已在已有会话中执行验证。重启影响该环境所有 agent。
+  重启前会检查已安装 Gateway 服务的配置路径，无法确认与所选环境一致时中止，防止重启另一套环境。
+- 此版只接管单 agent 的文件升级，不升级 OpenClaw 程序、不自动安装程序依赖或执行模板脚本。
+  `requiredLibraries` 中必需依赖须能通过 `bin` 检查已存在；团队模板需拆分单 agent 包分别刷新。
+
 ## create-instance
 
 ### 行为说明
@@ -54,7 +151,7 @@ python3 scripts/agentctl.py --version
 - 如果同名 agent 已存在，会跳过 `openclaw agents add`，继续后续步骤
 - 如果 workspace 已存在且非空，会跳过 `workspace.populate`，继续后续步骤
 - 同名 agent 重新执行 `create-instance` 时返回 `mode: reconciled`：更新模型目录、商店路由、公共 Skill 和受管运行规则；保留已有 Gateway Token、仍受支持的默认模型和非空 workspace
-- reconcile 当前不会自动合并新版模板文件到用户已使用的非空 workspace；模板版本三方合并需使用后续专用升级能力
+- reconcile 当前不会自动合并新版模板文件到用户已使用的非空 workspace；请使用 `refresh-agent` 升级模板
 - `--model-key` 为必填，会写入 `~/.openclaw/openclaw.json` 里每个模型 provider 的 `apiKey`
 - 模型环境根地址集中维护，`--model-env` 默认是 `global`：
 
