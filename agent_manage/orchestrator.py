@@ -367,6 +367,7 @@ class InstanceManagerV2(
                 "workspace": str(workspace),
                 "archive_path": str(archive_path),
                 "template_dir": str(template_dir) if template_dir else None,
+                "restart_required": True,
                 "steps": steps,
                 "total_elapsed_ms": self._elapsed_ms(execution_started_at),
             }

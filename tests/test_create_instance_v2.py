@@ -889,6 +889,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
+            self.assertTrue(result["restart_required"])
             self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
             self.assertEqual(result["additional_agents"], [])
             self.assertIsInstance(result["gateway_token"], str)

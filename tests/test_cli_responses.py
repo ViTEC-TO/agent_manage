@@ -318,6 +318,7 @@ class CliResponseTest(unittest.TestCase):
             manager_cls.return_value.create_instance.return_value = {
                 "ok": True,
                 "agent_name": "base",
+                "restart_required": True,
             }
 
             stdout = io.StringIO()
@@ -335,8 +336,10 @@ class CliResponseTest(unittest.TestCase):
                 )
 
         request = manager_cls.return_value.create_instance.call_args.args[0]
+        payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
+        self.assertTrue(payload["restartRequired"])
 
     def test_agent_manage_create_instance_accepts_local_agent_zip(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
