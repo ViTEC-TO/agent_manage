@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 
@@ -71,6 +73,29 @@ def _merged_runtime_config(seed_config_path: Path, runtime_config_path: Path) ->
     return json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
 
 
+def _atomic_write_runtime_config(path: Path, content: str) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        temporary_path.chmod(0o600)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 def initialize_openclaw_seed(seed_dir: Path, target_dir: Path) -> dict[str, object]:
     seed_dir = seed_dir.resolve()
     target_dir = target_dir.resolve()
@@ -101,9 +126,9 @@ def initialize_openclaw_seed(seed_dir: Path, target_dir: Path) -> dict[str, obje
                 shutil.copy2(source, destination)
             copied.append(source.name)
         runtime_config_path = target_dir / "openclaw.json"
-        runtime_config_path.write_text(
+        _atomic_write_runtime_config(
+            runtime_config_path,
             _merged_runtime_config(seed_dir / "openclaw.json", runtime_config_path),
-            encoding="utf-8",
         )
         copied.append("openclaw.json")
         initialized.write_text("1\n", encoding="ascii")

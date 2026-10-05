@@ -54,7 +54,8 @@ COPY container-image/nginx.conf /opt/unitag/nginx/nginx.conf
 RUN test -n "${TEMPLATE_IDENTIFY}"
 COPY container-image/templates/${TEMPLATE_IDENTIFY}.zip /home/node/template/${TEMPLATE_IDENTIFY}.zip
 RUN mkdir -p /opt/unitag/openclaw-seed \
-    && mkdir -p /home/node/.openclaw \
+    && mkdir -p /home/node/.openclaw/templates \
+    && cp /home/node/template/${TEMPLATE_IDENTIFY}.zip /home/node/.openclaw/templates/${TEMPLATE_IDENTIFY}.zip \
     && printf '{"gateway":{"mode":"local","auth":{"mode":"token"}}}\n' > /home/node/.openclaw/openclaw.json \
     && chown -R node:node /home/node/template /home/node/.openclaw /opt/unitag/openclaw-seed
 
@@ -67,7 +68,6 @@ RUN python3 /opt/unitag/agent-manager/scripts/agentctl.py add-agent \
     && openclaw plugins install "@openclaw/feishu@${FEISHU_PLUGIN_VERSION}" \
     && openclaw config set plugins.entries.openclaw-weixin.enabled true \
     && openclaw config set tools.agentToAgent.enabled true --strict-json \
-    && openclaw config set tools.agentToAgent.allow '[]' --strict-json \
     && openclaw config set tools.sessions.visibility '"all"' --strict-json \
     && openclaw config set agents.defaults.subagents.allowAgents '["*"]' --strict-json \
     && openclaw config set update.checkOnStart false \

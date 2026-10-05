@@ -22,6 +22,9 @@ from .template_safety import (
 class ProvisioningMixin:
     """Provision agents from templates while preserving existing workspaces."""
 
+    CONTAINER_PUBLIC_DELIVERY_ROOT = "/home/node/.openclaw/workspace/public"
+    VPS_PUBLIC_DELIVERY_ROOT = "/var/www/html"
+
     def resolve_agent_name(self, request: CreateInstanceRequest) -> str:
         template_name = (request.template_name or "").strip()
         if template_name:
@@ -680,15 +683,24 @@ class ProvisioningMixin:
     ) -> Dict[str, object]:
         resolved_quality = normalize_image_quality(quality)
 
-        public_url_rules = []
+        public_delivery_root = (
+            self.CONTAINER_PUBLIC_DELIVERY_ROOT
+            if self.container_runtime
+            else self.VPS_PUBLIC_DELIVERY_ROOT
+        )
+        public_url_rules = [
+            f"- This runtime's public file root is `{public_delivery_root}/`."
+        ]
         if base_url:
-            public_url_rules = [
-                f"- This host's public file base URL is `{base_url}`.",
-                "- When using `MEDIA:`, first publish the local file under "
-                f"`/var/www/html/`, then return its corresponding public URL as "
-                f"`MEDIA:{base_url}<relative-path>`. Never use a local filesystem path, "
-                "`localhost`, a loopback address, or an IPv6-only URL in `MEDIA:`.",
-            ]
+            public_url_rules.extend(
+                [
+                    f"- This host's public file base URL is `{base_url}`.",
+                    "- When using `MEDIA:`, first publish the local file under "
+                    f"`{public_delivery_root}/`, then return its corresponding public URL as "
+                    f"`MEDIA:{base_url}<relative-path>`. Never use a local filesystem path, "
+                    "`localhost`, a loopback address, or an IPv6-only URL in `MEDIA:`.",
+                ]
+            )
 
         policy_block = "\n".join(
             [

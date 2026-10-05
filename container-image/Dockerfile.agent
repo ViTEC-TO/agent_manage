@@ -14,7 +14,9 @@ RUN test -n "${TEMPLATE_IDENTIFY}" \
     && cp -a /opt/unitag/openclaw-seed/. /home/node/.openclaw/ \
     && chown -R node:node /home/node/.openclaw /home/node/template
 COPY container-image/templates/${TEMPLATE_IDENTIFY}.zip /home/node/template/${TEMPLATE_IDENTIFY}.zip
-RUN chown node:node /home/node/template/${TEMPLATE_IDENTIFY}.zip
+RUN mkdir -p /home/node/.openclaw/templates \
+    && cp /home/node/template/${TEMPLATE_IDENTIFY}.zip /home/node/.openclaw/templates/${TEMPLATE_IDENTIFY}.zip \
+    && chown -R node:node /home/node/template /home/node/.openclaw/templates
 
 USER node
 RUN python3 /opt/unitag/agent-manager/scripts/agentctl.py add-agent \

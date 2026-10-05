@@ -9,7 +9,7 @@ description: Deploy explicitly public user-facing files, HTML pages, previews, a
 2. Ensure `PATH` includes `/usr/local/sbin:/usr/sbin:/sbin`. Check nginx through the package manager, service state, or an absolute binary path; do not rely only on `command -v`.
 3. If nginx is missing, install it with the host package manager when system installation is authorized; otherwise report the blocker. Do not run it as a foreground service.
 4. Name files with lowercase URL-safe English words and hyphens: `<topic>-<content>.<ext>`. Add `-preview` before the extension for previews.
-5. Deploy only the required files under `/var/www/html/`. Preserve unrelated files and avoid overwriting an existing deliverable unless updating it is intended.
-6. Update `/var/www/html/index.html` without discarding existing entries. Link the new or updated deliverable.
+5. Use the public root declared in the workspace runtime rules. Container instances use `/home/node/.openclaw/workspace/public/`; VPS instances use `/var/www/html/`.
+6. Deploy only the required files under that public root and update its `index.html` without discarding existing entries. Preserve unrelated files and avoid overwriting an existing deliverable unless updating it is intended.
 7. Validate nginx configuration, service state, listening port, the deployed file, and relevant logs. Run network checks separately with bounded timeouts and IPv4, for example `curl -4 --max-time 5`.
 8. Return the verified public URL reachable over IPv4 for every delivered file. Prefer HTTPS when configured; otherwise return the actual HTTP URL. Never return a local path, IPv6 URL, or invented URL as the delivery result.

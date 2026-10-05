@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -16,7 +15,6 @@ NGINX_CONFIG_TEMPLATE = Path("/opt/unitag/nginx/nginx.conf")
 PUBLIC_ROOT = Path("/home/node/.openclaw/workspace/public")
 NGINX_RUNTIME_ROOT = Path("/tmp/nginx")
 DEFAULT_NGINX_PORT = 80
-ALIAS_DIRECTIVE = re.compile(r"(?<![\w-])alias\b", re.IGNORECASE)
 
 
 def resolve_nginx_port(value: str | None) -> int:
@@ -31,23 +29,83 @@ def resolve_nginx_port(value: str | None) -> int:
     return port
 
 
+def _nginx_directives(config: str) -> list[tuple[str, tuple[str, ...]]]:
+    tokens: list[str] = []
+    current: list[str] = []
+    index = 0
+    quote: str | None = None
+
+    while index < len(config):
+        char = config[index]
+        if quote is not None:
+            if char == "\\" and index + 1 < len(config):
+                index += 1
+                current.append(config[index])
+            elif char == quote:
+                quote = None
+            else:
+                current.append(char)
+        elif char in ('"', "'"):
+            quote = char
+        elif char == "#":
+            while index < len(config) and config[index] not in "\r\n":
+                index += 1
+            continue
+        elif char.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        elif char in "{};":
+            if current:
+                tokens.append("".join(current))
+                current = []
+            tokens.append(char)
+        else:
+            current.append(char)
+        index += 1
+
+    if quote is not None:
+        raise ValueError("nginx configuration contains an unterminated quoted value")
+    if current:
+        tokens.append("".join(current))
+
+    directives: list[tuple[str, tuple[str, ...]]] = []
+    statement: list[str] = []
+    for token in tokens:
+        if token == ";":
+            if statement:
+                directives.append((statement[0].lower(), tuple(statement[1:])))
+            statement = []
+        elif token in ("{", "}"):
+            statement = []
+        else:
+            statement.append(token)
+    return directives
+
+
+def _directive_arguments(
+    directives: list[tuple[str, tuple[str, ...]]], name: str
+) -> list[tuple[str, ...]]:
+    return [arguments for directive, arguments in directives if directive == name.lower()]
+
+
 def validate_nginx_config(config: str, expected_port: int) -> None:
-    uncommented = re.sub(r"#.*$", "", config, flags=re.MULTILINE)
-    if ALIAS_DIRECTIVE.search(uncommented):
+    directives = _nginx_directives(config)
+    if _directive_arguments(directives, "alias"):
         raise ValueError("nginx alias may not bypass the public workspace root")
 
-    includes = re.findall(r"^\s*include\s+([^;]+);", config, re.IGNORECASE | re.MULTILINE)
-    if includes != ["/etc/nginx/mime.types"]:
+    includes = _directive_arguments(directives, "include")
+    if includes != [("/etc/nginx/mime.types",)]:
         raise ValueError("nginx may only include /etc/nginx/mime.types")
 
     public_root = str(PUBLIC_ROOT).replace("\\", "/")
     runtime_root = str(NGINX_RUNTIME_ROOT).replace("\\", "/")
-    roots = re.findall(r"^\s*root\s+([^;]+);", config, re.IGNORECASE | re.MULTILINE)
-    if roots != [public_root]:
+    roots = _directive_arguments(directives, "root")
+    if roots != [(public_root,)]:
         raise ValueError(f"nginx root must be exactly {public_root}")
 
-    listens = re.findall(r"^\s*listen\s+([^;]+);", config, re.IGNORECASE | re.MULTILINE)
-    if len(listens) != 1 or listens[0].split()[0] != str(expected_port):
+    listens = _directive_arguments(directives, "listen")
+    if len(listens) != 1 or not listens[0] or listens[0][0] != str(expected_port):
         raise ValueError(f"nginx must listen exactly once on port {expected_port}")
 
     required_paths = (
