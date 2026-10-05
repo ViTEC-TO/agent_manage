@@ -3955,6 +3955,7 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["mode"], "configured")
+            self.assertTrue(result["restart_required"])
             self.assertEqual(result["agent_names"], ["team", "reviewer"])
             self.assertNotIn("archive_path", result)
             self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
@@ -3969,6 +3970,10 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertFalse(
                 any(call[:3] == ["openclaw", "agents", "add"] for call in runner.calls)
             )
+            serialized_result = json.dumps(result, ensure_ascii=False)
+            self.assertNotIn("runtime-secret", serialized_result)
+            self.assertLess(len(serialized_result.encode("utf-8")), 512 * 1024)
+            self.assertTrue(all("elapsed_ms" in step for step in result["steps"]))
 
     def test_configure_instance_preserves_gateway_token_on_retry_without_archive(self):
         with tempfile.TemporaryDirectory() as tmp:

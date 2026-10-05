@@ -123,6 +123,7 @@ class InstanceManagerV2(
                 "gateway_token": gateway_token,
                 "gateway_token_preserved": container_gateway_token is not None or existing_gateway_token is not None,
                 "config_path": str(self.config_path),
+                "restart_required": True,
                 "steps": steps,
                 "total_elapsed_ms": self._elapsed_ms(execution_started_at),
             }

@@ -33,6 +33,23 @@ class ContainerImageTest(unittest.TestCase):
                 json.dumps(
                     {
                         "gateway": {"auth": {"token": "runtime-gateway-token"}},
+                        "agents": {
+                            "defaults": {"model": {"primary": "deepseek/deepseek-v4-flash"}}
+                        },
+                        "models": {
+                            "providers": {
+                                "deepseek": {
+                                    "apiKey": "runtime-permission-ticket",
+                                    "models": [{"id": "deepseek-v4-flash"}],
+                                }
+                            }
+                        },
+                        "plugins": {
+                            "entries": {
+                                "openclaw-weixin": {"enabled": True},
+                                "feishu": {"enabled": True},
+                            }
+                        },
                         "runtimeOnly": {"value": 1},
                     }
                 ),
@@ -46,9 +63,23 @@ class ContainerImageTest(unittest.TestCase):
             self.assertEqual(merged["agents"]["list"][0]["id"], "unipay-claw-base")
             self.assertEqual(merged["gateway"]["auth"]["token"], "runtime-gateway-token")
             self.assertEqual(merged["gateway"]["auth"]["mode"], "token")
+            self.assertEqual(
+                merged["agents"]["defaults"]["model"]["primary"],
+                "deepseek/deepseek-v4-flash",
+            )
+            self.assertEqual(
+                merged["models"]["providers"]["deepseek"]["apiKey"],
+                "runtime-permission-ticket",
+            )
+            self.assertTrue(merged["plugins"]["entries"]["openclaw-weixin"]["enabled"])
+            self.assertTrue(merged["plugins"]["entries"]["feishu"]["enabled"])
             self.assertEqual(merged["runtimeOnly"], {"value": 1})
             self.assertTrue((target / "data" / "base" / "AGENTS.md").is_file())
             self.assertNotIn("runtime-gateway-token", (seed / "openclaw.json").read_text(encoding="utf-8"))
+            self.assertNotIn(
+                "runtime-permission-ticket",
+                (seed / "openclaw.json").read_text(encoding="utf-8"),
+            )
 
     def test_initialized_nonempty_target_is_not_reinitialized(self):
         with tempfile.TemporaryDirectory() as tmp:

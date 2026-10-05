@@ -108,7 +108,10 @@ class CliResponseTest(unittest.TestCase):
 
     def test_agent_manage_configure_instance_dispatches_without_create(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
-            manager_cls.return_value.configure_instance.return_value = {"ok": True}
+            manager_cls.return_value.configure_instance.return_value = {
+                "ok": True,
+                "restart_required": True,
+            }
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 exit_code = agent_manage_main(
@@ -122,6 +125,7 @@ class CliResponseTest(unittest.TestCase):
                 )
 
         self.assertEqual(exit_code, 0)
+        self.assertTrue(json.loads(stdout.getvalue())["restartRequired"])
         manager_cls.return_value.configure_instance.assert_called_once()
         request = manager_cls.return_value.configure_instance.call_args.args[0]
         self.assertIsNone(request.template_name)
