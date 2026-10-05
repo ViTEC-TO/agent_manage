@@ -758,6 +758,7 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         self.assertIsNone(without_base_url["base_url"])
         self.assertNotIn("public file base URL", old_policy)
+        self.assertIn("public file root is `/var/www/html/`", old_policy)
         self.assertEqual(
             with_base_url["base_url"],
             "https://server-001.web.dolaio.cn/",
@@ -775,6 +776,40 @@ class CreateInstanceV2Test(unittest.TestCase):
             new_policy.index("This host's public file base URL"),
             new_policy.index("Preserve existing and unrelated changes"),
         )
+
+    def test_container_runtime_policy_uses_container_public_root(self):
+        runner = FakeRunner()
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            manager = InstanceManagerV2(runner)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            manager._configure_runtime_policy(
+                [workspace],
+                quality="low",
+                base_url="https://server-001.web.dolaio.cn/",
+            )
+            policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "public file root is `/home/node/.openclaw/workspace/public/`",
+            policy,
+        )
+        self.assertNotIn("`/var/www/html/`", policy)
+
+    def test_nginx_delivery_skill_documents_both_runtime_roots(self):
+        skill_path = (
+            Path(__file__).resolve().parents[1]
+            / "agent_manage"
+            / "common_skills"
+            / "nginx-delivery"
+            / "SKILL.md"
+        )
+        skill = skill_path.read_text(encoding="utf-8")
+
+        self.assertIn("/home/node/.openclaw/workspace/public/", skill)
+        self.assertIn("/var/www/html/", skill)
 
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(

@@ -75,6 +75,11 @@ class ContainerRuntimeTest(unittest.TestCase):
                 "disable_symlinks on;\n"
                 "location /private/ { alias /home/node/.openclaw/; }",
             ),
+            valid.replace(
+                "disable_symlinks on;",
+                "disable_symlinks on;\n"
+                "location / { root /home/node/.openclaw; try_files $uri $uri/ =404; }",
+            ),
         )
         container_runtime.validate_nginx_config(valid, 8080)
         for invalid in invalid_configs:
@@ -121,8 +126,9 @@ class ContainerRuntimeTest(unittest.TestCase):
             template_path.parent.mkdir(parents=True)
             valid = self._valid_config(public_root.as_posix(), runtime_root.as_posix())
             invalid = valid.replace(
-                "workspace/public",
-                "workspace/private",
+                "disable_symlinks on;",
+                "disable_symlinks on;\n"
+                "location / { root /home/node/.openclaw; try_files $uri $uri/ =404; }",
             )
             config_path.write_text(invalid, encoding="utf-8")
             template_path.write_text(
@@ -143,7 +149,7 @@ class ContainerRuntimeTest(unittest.TestCase):
 
             self.assertEqual(selected, runtime_root / "fallback-nginx.conf")
             self.assertEqual(config_path.read_text(encoding="utf-8"), invalid)
-            self.assertNotIn("workspace/private", selected.read_text(encoding="utf-8"))
+            self.assertNotIn("root /home/node/.openclaw;", selected.read_text(encoding="utf-8"))
             self.assertIn("trusted runtime fallback", stderr.getvalue())
             run.assert_called_once_with(
                 ["nginx", "-t", "-p", f"{runtime_root}/", "-c", str(selected)],

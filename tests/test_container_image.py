@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_manage.seed import (
     INITIALIZING_MARKER,
@@ -144,6 +145,30 @@ class ContainerImageTest(unittest.TestCase):
                 "runtime-gateway-token",
             )
 
+    def test_seed_config_replace_failure_preserves_runtime_config_for_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            target = root / "target"
+            seed.mkdir()
+            target.mkdir()
+            (seed / "openclaw.json").write_text('{"agents": {}}\n', encoding="utf-8")
+            runtime_config = '{"gateway": {"auth": {"token": "runtime-token"}}}\n'
+            (target / "openclaw.json").write_text(runtime_config, encoding="utf-8")
+
+            with patch("agent_manage.seed.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    initialize_openclaw_seed(seed, target)
+
+            self.assertEqual(
+                (target / "openclaw.json").read_text(encoding="utf-8"),
+                runtime_config,
+            )
+            result = initialize_openclaw_seed(seed, target)
+            merged = json.loads((target / "openclaw.json").read_text(encoding="utf-8"))
+            self.assertTrue(result["initialized"])
+            self.assertEqual(merged["gateway"]["auth"]["token"], "runtime-token")
+
     def test_missing_seed_fails_stably(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -168,6 +193,11 @@ class ContainerImageTest(unittest.TestCase):
         self.assertIn('openclaw plugins install "@openclaw/qqbot@${QQBOT_PLUGIN_VERSION}"', dockerfile)
         self.assertIn('openclaw plugins install "@openclaw/feishu@${FEISHU_PLUGIN_VERSION}"', dockerfile)
         self.assertIn("openclaw config set tools.agentToAgent.enabled true --strict-json", dockerfile)
+        self.assertNotIn("openclaw config set tools.agentToAgent.allow '[]' --strict-json", dockerfile)
+        self.assertIn(
+            "/home/node/.openclaw/templates/${TEMPLATE_IDENTIFY}.zip",
+            dockerfile,
+        )
         self.assertIn("openclaw config set update.checkOnStart false", dockerfile)
         self.assertIn("apt-get", dockerfile)
         self.assertIn("--no-install-recommends nginx", dockerfile)
@@ -243,6 +273,10 @@ class ContainerImageTest(unittest.TestCase):
         self.assertIn("FROM ${UNITAG_AGENT_BASE_IMAGE}", dockerfile)
         self.assertIn("container-image/templates/${TEMPLATE_IDENTIFY}.zip", dockerfile)
         self.assertIn("agentctl.py add-agent", dockerfile)
+        self.assertIn(
+            "/home/node/.openclaw/templates/${TEMPLATE_IDENTIFY}.zip",
+            dockerfile,
+        )
         self.assertIn("rm -rf /opt/unitag/openclaw-seed", dockerfile)
         self.assertIn("cp -a /home/node/.openclaw /opt/unitag/openclaw-seed", dockerfile)
         self.assertNotIn("apt-get", dockerfile)
