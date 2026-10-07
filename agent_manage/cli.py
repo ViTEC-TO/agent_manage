@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import List, Optional
 
@@ -22,10 +23,12 @@ from .models import (
 )
 from .orchestrator import InstanceManagerV2
 from .response import (
+    CliArgumentError,
     JsonArgumentParser,
     build_error_response,
     build_success_response,
     print_json,
+    redact_sensitive_values,
 )
 
 MODEL_ENV_CHOICES = sorted(InstanceManagerV2.MODEL_GATEWAYS.keys())
@@ -36,6 +39,7 @@ IMAGE_QUALITY_CHOICES = InstanceManagerV2.IMAGE_QUALITY_CHOICES
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = JsonArgumentParser(prog="agent-manage")
     parser.add_argument("--openclaw-bin", default="openclaw")
     parser.add_argument("--project-dir")
@@ -46,29 +50,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create_instance = subparsers.add_parser("create-instance")
-    create_instance.add_argument("--template-name")
-    create_instance.add_argument("--agent-zip")
-    create_instance.add_argument("--local", action="store_true")
-    create_instance.add_argument("--model-key", required=True)
-    create_instance.add_argument(
-        "--model-env",
-        choices=MODEL_ENV_CHOICES,
-        default=DEFAULT_MODEL_ENV,
-    )
-    create_instance.add_argument(
-        "--ai-shop",
-        default=DEFAULT_AI_SHOP,
-        help=f"model shop path (default: {DEFAULT_AI_SHOP})",
-    )
-    create_instance.add_argument("--model")
-    create_instance.add_argument(
-        "--image-quality",
-        choices=IMAGE_QUALITY_CHOICES,
-        default=DEFAULT_IMAGE_QUALITY,
-    )
-    create_instance.add_argument("--base-url")
-    create_instance.add_argument("--workspace-root")
-    create_instance.add_argument("--no-rollback", action="store_true")
+    _add_instance_arguments(create_instance)
+
+    configure_instance = subparsers.add_parser("configure-instance")
+    _add_instance_arguments(configure_instance)
+
+    add_agent = subparsers.add_parser("add-agent")
+    add_agent.add_argument("--template-name", required=True)
+    add_agent.add_argument("--agent-name")
+    add_agent.add_argument("--workspace-root")
+    add_agent.add_argument("--model")
+    add_agent.add_argument("--base-url")
+    add_agent.add_argument("--template-zip-url")
+    add_agent.add_argument("--template-zip-sha256")
 
     add_agents = subparsers.add_parser("add-agents")
     add_agents.add_argument("--agents", required=True)
@@ -99,7 +93,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
-    add_tg_bot.add_argument("--tg-token", required=True)
+    add_tg_bot_token = add_tg_bot.add_mutually_exclusive_group(required=True)
+    add_tg_bot_token.add_argument("--tg-token")
+    add_tg_bot_token.add_argument("--tg-token-stdin", action="store_true")
     add_tg_bot.add_argument("--bot-name")
 
     add_feishu_bot = subparsers.add_parser("add-feishu-bot")
@@ -123,7 +119,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_weixin_bot = subparsers.add_parser("add-weixin-bot")
     add_weixin_bot.add_argument("--agent", required=True)
     add_weixin_bot.add_argument("--ilink-bot-id", required=True)
-    add_weixin_bot.add_argument("--bot-token", required=True)
+    add_weixin_bot_token = add_weixin_bot.add_mutually_exclusive_group(required=True)
+    add_weixin_bot_token.add_argument("--bot-token")
+    add_weixin_bot_token.add_argument("--bot-token-stdin", action="store_true")
     add_weixin_bot.add_argument("--baseurl")
     add_weixin_bot.add_argument("--ilink-user-id")
     add_weixin_bot.add_argument("--bot-name")
@@ -160,8 +158,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     subparsers.add_parser("current-gateway-token")
 
+    sensitive_values: List[str] = []
     try:
         args = parser.parse_args(argv)
+        _reject_container_path_overrides(raw_argv)
+        container_runtime = os.environ.get("UNITAG_AGENT_MANAGER_RUNTIME") == "container"
         client = InstanceManagerV2(
             LocalRunner(
                 openclaw_bin=args.openclaw_bin,
@@ -172,34 +173,68 @@ def main(argv: Optional[List[str]] = None) -> int:
             config_path=args.config_path,
         )
 
-        if args.command == "create-instance":
-            result = client.create_instance(
-                CreateInstanceRequest(
-                    template_name=args.template_name,
-                    model_key=args.model_key,
-                    model_env=args.model_env,
-                    ai_shop=args.ai_shop,
-                    model=args.model,
-                    image_quality=args.image_quality,
-                    base_url=args.base_url,
-                    workspace_root=args.workspace_root
-                    or ("~/.openclaw/data" if args.local else "~/data"),
-                    rollback_on_fail=not args.no_rollback,
-                    agent_zip=args.agent_zip,
-                    local=args.local,
-                )
+        if args.command in ("create-instance", "configure-instance"):
+            request = CreateInstanceRequest(
+                template_name=args.template_name,
+                model_key=_secret_argument(
+                    args.model_key,
+                    args.model_key_stdin,
+                    sensitive_values,
+                    client.runner.add_redaction_value,
+                ),
+                model_env=args.model_env,
+                ai_shop=args.ai_shop,
+                model=args.model,
+                image_quality=args.image_quality,
+                base_url=args.base_url,
+                workspace_root=args.workspace_root
+                or (
+                    InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
+                    if container_runtime
+                    else ("~/.openclaw/data" if args.local else "~/data")
+                ),
+                rollback_on_fail=not args.no_rollback,
+                agent_zip=args.agent_zip,
+                local=args.local,
             )
-            print_json(build_success_response(result))
+            result = (
+                client.create_instance(request)
+                if args.command == "create-instance"
+                else client.configure_instance(request)
+            )
+            print_json(_success_response(result, client))
+            return 0
+        if args.command == "add-agent":
+            result = client.add_agent(
+                template_name=args.template_name,
+                agent_name=args.agent_name,
+                workspace_root=args.workspace_root
+                or (
+                    InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
+                    if container_runtime
+                    else "~/data"
+                ),
+                model=args.model,
+                base_url=args.base_url,
+                template_zip_url=args.template_zip_url,
+                template_zip_sha256=args.template_zip_sha256,
+            )
+            print_json(_success_response(result, client))
             return 0
         if args.command == "add-agents":
             result = client.add_agents(
                 AddAgentsRequest(
                     agents=_parse_add_agents(args.agents),
-                    workspace_root=args.workspace_root,
+                    workspace_root=args.workspace_root
+                    or (
+                        InstanceManagerV2.CONTAINER_WORKSPACE_ROOT
+                        if container_runtime
+                        else "~/data"
+                    ),
                     base_url=args.base_url,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "refresh-agent":
             result = client.refresh_agent(RefreshAgentRequest(
@@ -231,11 +266,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = client.add_tg_bot(
                 AddTelegramBotRequest(
                     agent_name=args.agent,
-                    bot_token=args.tg_token,
+                    bot_token=_secret_argument(
+                        args.tg_token,
+                        args.tg_token_stdin,
+                        sensitive_values,
+                        client.runner.add_redaction_value,
+                    ),
                     bot_name=args.bot_name,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "add-feishu-bot":
             result = client.add_feishu_bot(
@@ -244,9 +284,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                     domain=args.domain,
                     account_id=args.account_id,
                     app_id=args.app_id,
-                    app_secret=_read_secret_from_stdin()
-                    if args.app_secret_stdin
-                    else args.app_secret,
+                    app_secret=_secret_argument(
+                        args.app_secret,
+                        args.app_secret_stdin,
+                        sensitive_values,
+                        client.runner.add_redaction_value,
+                    ),
                     bot_name=args.bot_name,
                     dm_policy=args.dm_policy,
                     allow_from=args.allow_from,
@@ -254,14 +297,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                     lark_cli_identity=args.lark_cli_identity,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "add-weixin-bot":
             result = client.add_weixin_bot(
                 AddWeixinBotRequest(
                     agent_name=args.agent,
                     ilink_bot_id=args.ilink_bot_id,
-                    bot_token=args.bot_token,
+                    bot_token=_secret_argument(
+                        args.bot_token,
+                        args.bot_token_stdin,
+                        sensitive_values,
+                        client.runner.add_redaction_value,
+                    ),
                     baseurl=args.baseurl,
                     ilink_user_id=args.ilink_user_id,
                     bot_name=args.bot_name,
@@ -269,23 +317,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                     cdn_base_url=args.cdn_base_url,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "check-server-status":
             result = client.check_server_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "tg-bot-status":
             result = client.get_tg_bot_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "feishu-bot-status":
             result = client.get_feishu_bot_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "weixin-bot-status":
             result = client.get_weixin_bot_status()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "delete-tg-bot":
             result = client.delete_tg_bot(
@@ -293,7 +341,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     bot_name=args.bot_name,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "delete-feishu-bot":
             result = client.delete_feishu_bot(
@@ -301,7 +349,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     account_id=args.account_id,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "delete-weixin-bot":
             result = client.delete_weixin_bot(
@@ -309,11 +357,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     ilink_bot_id=args.ilink_bot_id,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "agents-list":
             result = client.list_agents()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "set-model":
             result = client.set_model(
@@ -321,23 +369,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                     model_ref=args.model,
                 )
             )
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "current-model":
             result = client.get_current_model()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "models":
             result = client.get_supported_models()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "update-model":
             result = client.update_model_catalog()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
         if args.command == "current-gateway-token":
             result = client.get_current_gateway_token()
-            print_json(build_success_response(result))
+            print_json(_success_response(result, client))
             return 0
 
         parser.print_help(sys.stderr)
@@ -345,7 +393,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except SystemExit:
         raise
     except Exception as exc:
-        print_json(build_error_response(exc))
+        print_json(redact_sensitive_values(build_error_response(exc), sensitive_values))
         return 1
 
 
@@ -376,6 +424,8 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
         template_name = item.get("template_name")
         workspace = item.get("workspace")
         model = item.get("model")
+        template_zip_url = item.get("template_zip_url")
+        template_zip_sha256 = item.get("template_zip_sha256")
 
         if not isinstance(agent_name, str) or not agent_name.strip():
             raise ValueError(f"agents[{index}].agent_name is required")
@@ -385,6 +435,10 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
             raise ValueError(f"agents[{index}].workspace must be a string")
         if model is not None and not isinstance(model, str):
             raise ValueError(f"agents[{index}].model must be a string")
+        if template_zip_url is not None and not isinstance(template_zip_url, str):
+            raise ValueError(f"agents[{index}].template_zip_url must be a string")
+        if template_zip_sha256 is not None and not isinstance(template_zip_sha256, str):
+            raise ValueError(f"agents[{index}].template_zip_sha256 must be a string")
 
         agents.append(
             AddAgentRequest(
@@ -392,13 +446,89 @@ def _parse_add_agents(raw: str) -> List[AddAgentRequest]:
                 template_name=template_name.strip() if isinstance(template_name, str) else None,
                 workspace=workspace.strip() if isinstance(workspace, str) else None,
                 model=model.strip() if isinstance(model, str) else None,
+                template_zip_url=(
+                    template_zip_url.strip()
+                    if isinstance(template_zip_url, str)
+                    else None
+                ),
+                template_zip_sha256=(
+                    template_zip_sha256.strip()
+                    if isinstance(template_zip_sha256, str)
+                    else None
+                ),
             )
         )
     return agents
 
 
+def _add_instance_arguments(parser) -> None:
+    parser.add_argument("--template-name")
+    parser.add_argument("--agent-zip")
+    parser.add_argument("--local", action="store_true")
+    model_key = parser.add_mutually_exclusive_group(required=True)
+    model_key.add_argument("--model-key")
+    model_key.add_argument("--model-key-stdin", action="store_true")
+    parser.add_argument(
+        "--model-env",
+        choices=MODEL_ENV_CHOICES,
+        default=DEFAULT_MODEL_ENV,
+    )
+    parser.add_argument(
+        "--ai-shop",
+        default=DEFAULT_AI_SHOP,
+        help=f"model shop path (default: {DEFAULT_AI_SHOP})",
+    )
+    parser.add_argument("--model")
+    parser.add_argument(
+        "--image-quality",
+        choices=IMAGE_QUALITY_CHOICES,
+        default=DEFAULT_IMAGE_QUALITY,
+    )
+    parser.add_argument("--base-url")
+    parser.add_argument("--workspace-root")
+    parser.add_argument("--no-rollback", action="store_true")
+
+
 def _read_secret_from_stdin() -> str:
-    return sys.stdin.read().strip()
+    value = sys.stdin.read()
+    if value.endswith("\r\n"):
+        return value[:-2]
+    if value.endswith("\r") or value.endswith("\n"):
+        return value[:-1]
+    return value
+
+
+def _secret_argument(
+    plaintext: Optional[str],
+    from_stdin: bool,
+    sensitive_values: List[str],
+    register_redaction,
+) -> str:
+    value = _read_secret_from_stdin() if from_stdin else (plaintext or "")
+    if value:
+        sensitive_values.append(value)
+        register_redaction(value)
+        return value
+    raise ValueError("Secret value must not be empty")
+
+
+def _success_response(result: object, client: InstanceManagerV2) -> dict:
+    result_restart_required = (
+        isinstance(result, dict) and bool(result.get("restart_required", False))
+    )
+    return build_success_response(
+        result,
+        restart_required=bool(client.restart_required or result_restart_required),
+    )
+
+
+def _reject_container_path_overrides(argv: List[str]) -> None:
+    if os.environ.get("UNITAG_AGENT_MANAGER_RUNTIME") != "container":
+        return
+    forbidden = ("--openclaw-bin", "--project-dir", "--template-root", "--config-path")
+    for option in forbidden:
+        if option in argv or any(argument.startswith(f"{option}=") for argument in argv):
+            raise CliArgumentError(f"{option} is not allowed in container runtime")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@ class AddAgentRequest:
     template_name: str | None = None
     workspace: str | None = None
     model: str | None = None
+    template_zip_url: str | None = None
+    template_zip_sha256: str | None = None
 
 
 @dataclass

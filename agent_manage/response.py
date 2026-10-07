@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from typing import Any, Dict
 
@@ -15,6 +16,8 @@ TYPE_CODE_CONFLICT = 12
 TYPE_CODE_COMMAND_FAILED = 20
 TYPE_CODE_OPERATION_ROLLED_BACK = 21
 TYPE_CODE_INTERNAL_ERROR = 50
+TYPE_CODE_OUTPUT_TOO_LARGE = 20
+MAX_PROTOCOL_RESPONSE_BYTES = 512 * 1024
 
 
 class CliArgumentError(ValueError):
@@ -31,6 +34,7 @@ def build_success_response(
     *,
     message: str = "OK",
     type_code: int = TYPE_CODE_SUCCESS,
+    restart_required: bool = False,
 ) -> Dict[str, object]:
     return {
         "result": result,
@@ -38,6 +42,7 @@ def build_success_response(
         "typeCode": type_code,
         "message": message,
         "serverTimeStamp": _server_timestamp(),
+        "restartRequired": restart_required,
     }
 
 
@@ -69,6 +74,10 @@ def build_error_response(exc: Exception) -> Dict[str, object]:
     if rollback:
         error["rollback"] = rollback
 
+    total_elapsed_ms = payload.get("total_elapsed_ms") if payload else None
+    if isinstance(total_elapsed_ms, (int, float)):
+        error["total_elapsed_ms"] = total_elapsed_ms
+
     if isinstance(exc, CliArgumentError):
         error["details"] = {
             "kind": "argument",
@@ -81,11 +90,53 @@ def build_error_response(exc: Exception) -> Dict[str, object]:
         "typeCode": type_code,
         "message": message,
         "serverTimeStamp": _server_timestamp(),
+        "restartRequired": False,
     }
 
 
+def redact_sensitive_values(value: object, secrets: list[str]) -> object:
+    """Remove command-supplied secrets from error output without changing success data."""
+    values = [secret for secret in secrets if secret]
+    if isinstance(value, str):
+        for secret in values:
+            value = value.replace(secret, "[REDACTED]")
+        return value
+    if isinstance(value, list):
+        return [redact_sensitive_values(item, values) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_sensitive_values(item, values) for key, item in value.items()}
+    return value
+
+
 def print_json(value: object) -> None:
-    print(json.dumps(value, indent=2, ensure_ascii=False))
+    serialized = json.dumps(value, indent=2, ensure_ascii=False)
+    original_utf8_bytes = len(serialized.encode("utf-8"))
+    budget_applied = original_utf8_bytes > MAX_PROTOCOL_RESPONSE_BYTES
+    if budget_applied:
+        serialized = json.dumps(
+            {
+                "result": None,
+                "error": {
+                    "code": "RESPONSE_OUTPUT_TOO_LARGE",
+                    "details": {"totalUtf8Bytes": original_utf8_bytes},
+                },
+                "typeCode": TYPE_CODE_OUTPUT_TOO_LARGE,
+                "message": "AgentManager response exceeds the 512 KiB output budget",
+                "serverTimeStamp": _server_timestamp(),
+                "restartRequired": False,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    emitted_utf8_bytes = len(serialized.encode("utf-8"))
+    print(
+        "[agentctl response] "
+        f"original_utf8_bytes={original_utf8_bytes} "
+        f"emitted_utf8_bytes={emitted_utf8_bytes} "
+        f"budget_applied={str(budget_applied).lower()}",
+        file=sys.stderr,
+    )
+    print(serialized)
 
 
 def _server_timestamp() -> str:

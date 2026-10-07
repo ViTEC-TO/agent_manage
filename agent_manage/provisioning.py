@@ -6,6 +6,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, List, Optional
 
 from .local import CommandError
@@ -20,6 +21,9 @@ from .template_safety import (
 
 class ProvisioningMixin:
     """Provision agents from templates while preserving existing workspaces."""
+
+    CONTAINER_PUBLIC_DELIVERY_ROOT = "/home/node/.openclaw/workspace/public"
+    VPS_PUBLIC_DELIVERY_ROOT = "/var/www/html"
 
     def resolve_agent_name(self, request: CreateInstanceRequest) -> str:
         template_name = (request.template_name or "").strip()
@@ -64,6 +68,16 @@ class ProvisioningMixin:
     def _ensure_sources_ready(self, archive_path: Path) -> None:
         if not archive_path.is_file():
             raise FileNotFoundError(f"Template archive not found: {archive_path}")
+
+    def _inspect_template_archive(self, archive_path: Path) -> Dict[str, object]:
+        self._ensure_sources_ready(archive_path)
+        validate_template_archive(archive_path)
+        return {
+            "archive_path": str(archive_path),
+            "archive_source": "local",
+            "archive_bytes": archive_path.stat().st_size,
+            "future_network_download_elapsed_ms": None,
+        }
 
     def _workspace_has_content(self, workspace: Path) -> bool:
         if not workspace.exists():
@@ -131,6 +145,7 @@ class ProvisioningMixin:
         if template_dir.exists() and not template_dir.is_dir():
             raise NotADirectoryError(f"Template path is not a directory: {template_dir}")
 
+        extract_started_at = perf_counter()
         with tempfile.TemporaryDirectory() as tmpdir:
             extract_dir = Path(tmpdir)
             shutil.unpack_archive(str(archive_path), str(extract_dir))
@@ -144,6 +159,7 @@ class ProvisioningMixin:
             )
             backup_dir: Optional[Path] = None
             try:
+                copy_started_at = perf_counter()
                 copied = self._copy_directory_contents(source_root, staging_dir)
                 if template_dir.exists():
                     backup_dir = Path(
@@ -169,6 +185,8 @@ class ProvisioningMixin:
             "template_dir": str(template_dir),
             "archive_path": str(archive_path),
             "copied_into_template_dir": copied,
+            "zip_extract_elapsed_ms": round((copy_started_at - extract_started_at) * 1000, 1),
+            "template_copy_elapsed_ms": round((perf_counter() - copy_started_at) * 1000, 1),
         }
 
     def _populate_workspace(self, template_dir: Path, workspace: Path) -> Dict[str, object]:
@@ -205,6 +223,36 @@ class ProvisioningMixin:
         if not isinstance(payload, dict):
             raise ValueError(f"Template manifest must be a YAML object: {manifest_path}")
         return payload
+
+    def _load_template_manifest_for_timed_step(
+        self,
+        steps: List[Dict[str, object]],
+        template_dir: Path,
+        step_scope: Optional[str],
+    ) -> Dict[str, object]:
+        holder: Dict[str, Dict[str, object]] = {}
+
+        def load() -> Dict[str, object]:
+            manifest = self._load_template_manifest(template_dir)
+            holder["manifest"] = manifest
+            return {
+                "manifest_path": str(template_dir / "template.yaml"),
+                "manifest_exists": (template_dir / "template.yaml").is_file(),
+                "required_library_count": len(self._required_libraries_from_manifest(manifest)),
+                "common_skill_folder_count": len(
+                    self._common_skill_sources_from_manifest(template_dir, manifest)
+                ),
+                "declared_agent_count": len(
+                    manifest.get("agents", []) if isinstance(manifest.get("agents"), list) else []
+                ),
+            }
+
+        self._run_timed_step(
+            steps,
+            self._scoped_step_name("template.manifest.parse", step_scope),
+            load,
+        )
+        return holder["manifest"]
 
     def _parse_template_manifest_yaml_subset(self, text: str) -> Dict[str, object]:
         manifest: Dict[str, object] = {}
@@ -429,19 +477,23 @@ class ProvisioningMixin:
     ) -> Dict[str, object]:
         results = []
         for library in libraries:
+            library_started_at = perf_counter()
             name = str(library.get("name") or library.get("bin") or "").strip()
             if not name:
                 raise ValueError(f"requiredLibraries item missing name: {library}")
             required = library.get("required") is not False
+            verify_before_started_at = perf_counter()
             installed, check_result = self._library_is_installed(library)
             item_result: Dict[str, object] = {
                 "name": name,
                 "required": required,
                 "installed_before": installed,
                 "check": check_result,
+                "verify_before_elapsed_ms": self._elapsed_ms(verify_before_started_at),
             }
             if installed:
                 item_result["action"] = "continue"
+                item_result["elapsed_ms"] = self._elapsed_ms(library_started_at)
                 results.append(item_result)
                 continue
 
@@ -451,20 +503,26 @@ class ProvisioningMixin:
                     raise RuntimeError(f"Required library '{name}' is not installed and has no installCommand")
                 item_result["action"] = "skipped"
                 item_result["reason"] = "not_required_without_install_command"
+                item_result["elapsed_ms"] = self._elapsed_ms(library_started_at)
                 results.append(item_result)
                 continue
 
+            install_started_at = perf_counter()
             install_result = self.runner.run(
                 ["/bin/sh", "-lc", install_command],
                 timeout=self.LIBRARY_INSTALL_TIMEOUT_SECONDS,
             )
             item_result["action"] = "installed"
             item_result["install"] = self._command_result_payload(install_result)
+            item_result["install_elapsed_ms"] = self._elapsed_ms(install_started_at)
+            verify_after_started_at = perf_counter()
             installed_after, verify_after = self._library_is_installed(library)
             item_result["installed_after"] = installed_after
             item_result["verify_after"] = verify_after
+            item_result["verify_after_elapsed_ms"] = self._elapsed_ms(verify_after_started_at)
             if not installed_after:
                 raise RuntimeError(f"Required library '{name}' install completed but verification still failed")
+            item_result["elapsed_ms"] = self._elapsed_ms(library_started_at)
             results.append(item_result)
 
         return {
@@ -536,6 +594,7 @@ class ProvisioningMixin:
                 "exec_security": "full",
                 "web_search_enabled": False,
                 "web_fetch_enabled": True,
+                "web_fetch_use_trusted_env_proxy": True,
                 "agent_to_agent_enabled": True,
                 "agent_to_agent_allow": normalized_agent_names,
                 "sessions_visibility": "all",
@@ -551,7 +610,9 @@ class ProvisioningMixin:
         exec_config["security"] = "full"
         web = tools.setdefault("web", {})
         web["search"] = {"enabled": False}
-        web["fetch"] = {"enabled": True}
+        fetch = web.setdefault("fetch", {})
+        fetch["enabled"] = True
+        fetch["useTrustedEnvProxy"] = True
         agent_to_agent = tools.setdefault("agentToAgent", {})
         agent_to_agent["enabled"] = True
         agent_to_agent["allow"] = self._merge_agent_to_agent_allow(
@@ -577,6 +638,7 @@ class ProvisioningMixin:
                 "exec_security": "full",
                 "web_search_enabled": False,
                 "web_fetch_enabled": True,
+                "web_fetch_use_trusted_env_proxy": True,
                 "agent_to_agent_enabled": True,
                 "agent_to_agent_allow": agent_to_agent["allow"],
                 "sessions_visibility": "all",
@@ -588,6 +650,7 @@ class ProvisioningMixin:
             "exec_security": "full",
             "web_search_enabled": False,
             "web_fetch_enabled": True,
+            "web_fetch_use_trusted_env_proxy": True,
             "agent_to_agent_enabled": True,
             "agent_to_agent_allow": agent_to_agent["allow"],
             "sessions_visibility": "all",
@@ -620,15 +683,24 @@ class ProvisioningMixin:
     ) -> Dict[str, object]:
         resolved_quality = normalize_image_quality(quality)
 
-        public_url_rules = []
+        public_delivery_root = (
+            self.CONTAINER_PUBLIC_DELIVERY_ROOT
+            if self.container_runtime
+            else self.VPS_PUBLIC_DELIVERY_ROOT
+        )
+        public_url_rules = [
+            f"- This runtime's public file root is `{public_delivery_root}/`."
+        ]
         if base_url:
-            public_url_rules = [
-                f"- This host's public file base URL is `{base_url}`.",
-                "- When using `MEDIA:`, first publish the local file under "
-                f"`/var/www/html/`, then return its corresponding public URL as "
-                f"`MEDIA:{base_url}<relative-path>`. Never use a local filesystem path, "
-                "`localhost`, a loopback address, or an IPv6-only URL in `MEDIA:`.",
-            ]
+            public_url_rules.extend(
+                [
+                    f"- This host's public file base URL is `{base_url}`.",
+                    "- When using `MEDIA:`, first publish the local file under "
+                    f"`{public_delivery_root}/`, then return its corresponding public URL as "
+                    f"`MEDIA:{base_url}<relative-path>`. Never use a local filesystem path, "
+                    "`localhost`, a loopback address, or an IPv6-only URL in `MEDIA:`.",
+                ]
+            )
 
         policy_block = "\n".join(
             [
@@ -704,8 +776,9 @@ class ProvisioningMixin:
         model: Optional[str],
         rollback_on_fail: bool,
         step_scope: Optional[str],
+        require_existing_agent: bool = False,
+        defer_template_dir_commit: bool = False,
     ) -> Dict[str, object]:
-        self._ensure_sources_ready(archive_path=archive_path)
         workspace_existed_before = workspace.exists()
         template_dir_existed_before = template_dir.exists()
         workspace_has_content = self._workspace_has_content(workspace)
@@ -714,9 +787,24 @@ class ProvisioningMixin:
         created_agent = False
         started_template_prepare = False
         created_workspace = False
+        preserved_template_dir: Optional[Path] = None
 
         try:
+            self._run_timed_step(
+                steps,
+                self._scoped_step_name("template.archive.inspect", step_scope),
+                lambda: self._inspect_template_archive(archive_path),
+            )
             started_template_prepare = True
+            if template_dir_existed_before and not self.runner.dry_run:
+                preserved_template_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{template_dir.name}.provision-backup-",
+                        dir=str(template_dir.parent),
+                    )
+                )
+                preserved_template_dir.rmdir()
+                template_dir.replace(preserved_template_dir)
             self._run_timed_step(
                 steps,
                 self._scoped_step_name("template.prepare", step_scope),
@@ -725,7 +813,9 @@ class ProvisioningMixin:
                     template_dir=template_dir,
                 ),
             )
-            manifest = self._load_template_manifest(template_dir)
+            manifest = self._load_template_manifest_for_timed_step(
+                steps, template_dir, step_scope
+            )
             required_libraries = self._required_libraries_from_manifest(manifest)
             if required_libraries:
                 self._run_timed_step(
@@ -745,11 +835,19 @@ class ProvisioningMixin:
                     lambda: self._install_common_skills(common_skill_sources),
                 )
 
+            if require_existing_agent and not agent_exists:
+                raise FileNotFoundError(
+                    f"Prebuilt agent is missing from OpenClaw config: {agent_name}"
+                )
             if agent_exists:
                 self.runner.log(f"agent exists, skip add: {agent_name}")
                 agent_result = {
                     "skipped": True,
-                    "reason": "agent_exists",
+                    "reason": (
+                        "prebuilt_agent_verified"
+                        if require_existing_agent
+                        else "agent_exists"
+                    ),
                     "agent_name": agent_name,
                 }
                 steps.append(
@@ -797,6 +895,9 @@ class ProvisioningMixin:
                     and workspace.exists()
                     and not workspace_result.get("skipped", False)
                 )
+            if preserved_template_dir is not None and not defer_template_dir_commit:
+                shutil.rmtree(preserved_template_dir)
+                preserved_template_dir = None
             return {
                 "created_agent": created_agent,
                 "started_template_prepare": started_template_prepare,
@@ -804,16 +905,34 @@ class ProvisioningMixin:
                     not template_dir_existed_before and template_dir.exists()
                 ),
                 "created_workspace": created_workspace,
+                "preserved_template_dir": preserved_template_dir,
             }
         except Exception as exc:
             rollback_steps: List[Dict[str, object]] = []
             if rollback_on_fail:
                 if not workspace_existed_before and workspace.exists():
-                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_workspace(workspace)
+                    )
                 if created_agent:
-                    rollback_steps.append(self._safe_delete_agent(agent_name))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_delete_agent(agent_name)
+                    )
                 if not template_dir_existed_before and template_dir.exists():
-                    rollback_steps.append(self._safe_purge_template_dir(template_dir))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_template_dir(template_dir)
+                    )
+            if preserved_template_dir is not None and preserved_template_dir.exists():
+                if template_dir.exists():
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_template_dir(template_dir)
+                    )
+                self._run_timed_rollback_step(
+                    rollback_steps,
+                    lambda: self._safe_restore_template_dir(
+                        preserved_template_dir, template_dir
+                    ),
+                )
             raise RuntimeError(
                 json.dumps(
                     {
@@ -844,6 +963,7 @@ class ProvisioningMixin:
         model: Optional[str],
         rollback_on_fail: bool,
         step_scope: Optional[str],
+        require_existing_agent: bool = False,
     ) -> Dict[str, object]:
         if not template_dir.is_dir():
             raise FileNotFoundError(f"Agent template folder not found: {template_dir}")
@@ -855,7 +975,9 @@ class ProvisioningMixin:
         created_workspace = False
 
         try:
-            manifest = self._load_template_manifest(template_dir)
+            manifest = self._load_template_manifest_for_timed_step(
+                steps, template_dir, step_scope
+            )
             required_libraries = self._required_libraries_from_manifest(manifest)
             if required_libraries:
                 self._run_timed_step(
@@ -875,11 +997,19 @@ class ProvisioningMixin:
                     lambda: self._install_common_skills(common_skill_sources),
                 )
 
+            if require_existing_agent and not agent_exists:
+                raise FileNotFoundError(
+                    f"Prebuilt agent is missing from OpenClaw config: {agent_name}"
+                )
             if agent_exists:
                 self.runner.log(f"agent exists, skip add: {agent_name}")
                 agent_result = {
                     "skipped": True,
-                    "reason": "agent_exists",
+                    "reason": (
+                        "prebuilt_agent_verified"
+                        if require_existing_agent
+                        else "agent_exists"
+                    ),
                     "agent_name": agent_name,
                 }
                 steps.append(
@@ -937,9 +1067,13 @@ class ProvisioningMixin:
             rollback_steps: List[Dict[str, object]] = []
             if rollback_on_fail:
                 if not workspace_existed_before and workspace.exists():
-                    rollback_steps.append(self._safe_purge_workspace(workspace))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_purge_workspace(workspace)
+                    )
                 if created_agent:
-                    rollback_steps.append(self._safe_delete_agent(agent_name))
+                    self._run_timed_rollback_step(
+                        rollback_steps, lambda: self._safe_delete_agent(agent_name)
+                    )
             raise RuntimeError(
                 json.dumps(
                     {
@@ -1007,3 +1141,15 @@ class ProvisioningMixin:
             return {"step": "rollback.template.purge", "result": {"deleted": True, "path": str(template_dir)}}
         except Exception as exc:
             return {"step": "rollback.template.purge", "error": str(exc)}
+
+    def _safe_restore_template_dir(
+        self, backup_dir: Path, template_dir: Path
+    ) -> Dict[str, object]:
+        try:
+            backup_dir.replace(template_dir)
+            return {
+                "step": "rollback.template.restore",
+                "result": {"restored": True, "path": str(template_dir)},
+            }
+        except Exception as exc:
+            return {"step": "rollback.template.restore", "error": str(exc)}

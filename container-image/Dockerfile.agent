@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+ARG UNITAG_AGENT_BASE_IMAGE
+FROM ${UNITAG_AGENT_BASE_IMAGE}
+
+ARG TEMPLATE_IDENTIFY
+
+LABEL io.dola.unitag.image-kind="prebuilt-agent" \
+      io.dola.unitag.template-identify="${TEMPLATE_IDENTIFY}"
+
+USER root
+RUN test -n "${TEMPLATE_IDENTIFY}" \
+    && rm -rf /home/node/.openclaw \
+    && mkdir -p /home/node/.openclaw /home/node/template \
+    && cp -a /opt/unitag/openclaw-seed/. /home/node/.openclaw/ \
+    && chown -R node:node /home/node/.openclaw /home/node/template
+COPY container-image/templates/${TEMPLATE_IDENTIFY}.zip /home/node/template/${TEMPLATE_IDENTIFY}.zip
+RUN mkdir -p /home/node/.openclaw/templates \
+    && cp /home/node/template/${TEMPLATE_IDENTIFY}.zip /home/node/.openclaw/templates/${TEMPLATE_IDENTIFY}.zip \
+    && chown -R node:node /home/node/template /home/node/.openclaw/templates
+
+USER node
+RUN python3 /opt/unitag/agent-manager/scripts/agentctl.py add-agent \
+      --template-name "${TEMPLATE_IDENTIFY}" \
+      --workspace-root /home/node/.openclaw/data
+
+USER root
+RUN rm -rf /opt/unitag/openclaw-seed \
+    && cp -a /home/node/.openclaw /opt/unitag/openclaw-seed \
+    && python3 -m agent_manage.seed \
+      --seed /opt/unitag/openclaw-seed \
+      --validate-only \
+    && chown -R node:node /opt/unitag/openclaw-seed
+
+USER node

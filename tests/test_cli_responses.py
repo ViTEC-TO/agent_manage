@@ -1,20 +1,189 @@
 import io
 import json
+import os
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from agent_manage import __version__
 from agent_manage.cli import main as agent_manage_main
 from agent_manage.models import AddAgentsRequest
 from agent_manage.response import (
+    MAX_PROTOCOL_RESPONSE_BYTES,
     TYPE_CODE_INVALID_ARGUMENT,
     TYPE_CODE_NOT_FOUND,
+    TYPE_CODE_OUTPUT_TOO_LARGE,
     TYPE_CODE_SUCCESS,
+    build_success_response,
+    build_error_response,
+    print_json,
 )
 
 
 class CliResponseTest(unittest.TestCase):
+    def test_agent_manage_add_agent_dispatches_template_registration(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {"ok": True}
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "add-agent",
+                        "--template-name",
+                        "team",
+                        "--agent-name",
+                        "primary",
+                        "--workspace-root",
+                        "/data",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        manager_cls.return_value.add_agent.assert_called_once_with(
+            template_name="team",
+            agent_name="primary",
+            workspace_root="/data",
+            model=None,
+            base_url=None,
+            template_zip_url=None,
+            template_zip_sha256=None,
+        )
+
+    def test_agent_manage_add_agent_accepts_base_url(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {"ok": True}
+            with redirect_stdout(io.StringIO()):
+                exit_code = agent_manage_main(
+                    [
+                        "add-agent",
+                        "--template-name",
+                        "team",
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            manager_cls.return_value.add_agent.call_args.kwargs["base_url"],
+            "https://server-001.web.dolaio.cn/",
+        )
+
+    def test_agent_manage_add_agent_accepts_template_archive_source(self):
+        digest = "a" * 64
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {"ok": True}
+            with redirect_stdout(io.StringIO()):
+                exit_code = agent_manage_main(
+                    [
+                        "add-agent",
+                        "--template-name",
+                        "team",
+                        "--template-zip-url",
+                        "https://assets.example.test/team.zip",
+                        "--template-zip-sha256",
+                        digest,
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        kwargs = manager_cls.return_value.add_agent.call_args.kwargs
+        self.assertEqual(kwargs["template_zip_url"], "https://assets.example.test/team.zip")
+        self.assertEqual(kwargs["template_zip_sha256"], digest)
+
+    def test_agent_manage_add_agent_surfaces_restart_required(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_agent.return_value = {
+                "ok": True,
+                "restart_required": True,
+            }
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    ["add-agent", "--template-name", "team"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(json.loads(stdout.getvalue())["restartRequired"])
+
+    def test_agent_manage_configure_instance_dispatches_without_create(self):
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.configure_instance.return_value = {
+                "ok": True,
+                "restart_required": True,
+            }
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    [
+                        "configure-instance",
+                        "--model-key",
+                        "runtime-secret",
+                        "--base-url",
+                        "https://server-001.web.dolaio.cn/",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(json.loads(stdout.getvalue())["restartRequired"])
+        manager_cls.return_value.configure_instance.assert_called_once()
+        request = manager_cls.return_value.configure_instance.call_args.args[0]
+        self.assertIsNone(request.template_name)
+        self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
+        manager_cls.return_value.create_instance.assert_not_called()
+
+    def test_embedded_failure_response_preserves_total_elapsed_ms(self):
+        response = build_error_response(
+            RuntimeError(json.dumps({"error": "failed", "total_elapsed_ms": 12.3}))
+        )
+
+        self.assertEqual(response["error"]["total_elapsed_ms"], 12.3)
+
+    def test_oversized_final_json_returns_small_redacted_error_envelope(self):
+        secret = "never-leak-this-secret"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        oversized = build_success_response({"payload": secret + ("x" * MAX_PROTOCOL_RESPONSE_BYTES)})
+        original_utf8_bytes = len(json.dumps(oversized, indent=2, ensure_ascii=False).encode("utf-8"))
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            print_json(oversized)
+
+        output = stdout.getvalue()
+        diagnostics = stderr.getvalue()
+        payload = json.loads(output)
+        self.assertLess(len(output.encode("utf-8")), 8_192)
+        self.assertEqual(payload["typeCode"], TYPE_CODE_OUTPUT_TOO_LARGE)
+        self.assertEqual(payload["error"]["code"], "RESPONSE_OUTPUT_TOO_LARGE")
+        self.assertEqual(payload["error"]["details"]["totalUtf8Bytes"], original_utf8_bytes)
+        self.assertNotIn(secret, output)
+        self.assertNotIn(secret, diagnostics)
+        self.assertEqual(
+            diagnostics,
+            "[agentctl response] "
+            f"original_utf8_bytes={original_utf8_bytes} "
+            f"emitted_utf8_bytes={len(output.rstrip(chr(10)).encode('utf-8'))} "
+            "budget_applied=true\n",
+        )
+
+    def test_small_final_json_reports_exact_emitted_byte_count(self):
+        response = build_success_response({"message": "猫"})
+        expected_utf8_bytes = len(json.dumps(response, indent=2, ensure_ascii=False).encode("utf-8"))
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            print_json(response)
+
+        self.assertEqual(json.loads(stdout.getvalue()), response)
+        self.assertEqual(
+            stderr.getvalue(),
+            "[agentctl response] "
+            f"original_utf8_bytes={expected_utf8_bytes} "
+            f"emitted_utf8_bytes={expected_utf8_bytes} "
+            "budget_applied=false\n",
+        )
+
     def test_agent_manage_version_uses_package_version(self):
         stdout = io.StringIO()
         with self.assertRaises(SystemExit) as raised, redirect_stdout(stdout):
@@ -149,6 +318,7 @@ class CliResponseTest(unittest.TestCase):
             manager_cls.return_value.create_instance.return_value = {
                 "ok": True,
                 "agent_name": "base",
+                "restart_required": True,
             }
 
             stdout = io.StringIO()
@@ -166,8 +336,10 @@ class CliResponseTest(unittest.TestCase):
                 )
 
         request = manager_cls.return_value.create_instance.call_args.args[0]
+        payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(request.base_url, "https://server-001.web.dolaio.cn/")
+        self.assertTrue(payload["restartRequired"])
 
     def test_agent_manage_create_instance_accepts_local_agent_zip(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
@@ -259,13 +431,20 @@ class CliResponseTest(unittest.TestCase):
                     [
                         "add-agents",
                         "--agents",
-                        '[{"agent_name":"demo","template_name":"demo-template"}]',
+                        '[{"agent_name":"demo","template_name":"demo-template",'
+                        '"template_zip_url":"https://assets.example.test/demo.zip",'
+                        '"template_zip_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]',
                     ]
                 )
 
         request = manager_cls.return_value.add_agents.call_args.args[0]
         self.assertEqual(exit_code, 0)
         self.assertEqual(request.agents[0].template_name, "demo-template")
+        self.assertEqual(
+            request.agents[0].template_zip_url,
+            "https://assets.example.test/demo.zip",
+        )
+        self.assertEqual(request.agents[0].template_zip_sha256, "a" * 64)
 
     def test_agent_manage_weixin_bot_status_uses_result_envelope(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
@@ -379,6 +558,86 @@ class CliResponseTest(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["result"]["account_id"], "b0f5860fdecb-im-bot")
+
+    def test_container_mode_reads_model_key_from_stdin_and_strips_one_newline(self):
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+                manager_cls.return_value.create_instance.return_value = {"ok": True}
+                manager_cls.return_value.restart_required = False
+                stdout = io.StringIO()
+                with patch("sys.stdin", io.StringIO("model-secret\r\n")), redirect_stdout(stdout):
+                    exit_code = agent_manage_main(
+                        ["create-instance", "--template-name", "base", "--model-key-stdin"]
+                    )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(request.model_key, "model-secret")
+        self.assertFalse(json.loads(stdout.getvalue())["restartRequired"])
+
+    def test_container_mode_uses_persistent_workspace_root_for_create_instance(self):
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+                manager_cls.CONTAINER_WORKSPACE_ROOT = "/home/node/.openclaw/data"
+                manager_cls.return_value.create_instance.return_value = {"ok": True}
+                manager_cls.return_value.restart_required = False
+                with redirect_stdout(io.StringIO()):
+                    agent_manage_main(
+                        ["create-instance", "--template-name", "base", "--model-key", "key"]
+                    )
+
+        request = manager_cls.return_value.create_instance.call_args.args[0]
+        self.assertEqual(request.workspace_root, "/home/node/.openclaw/data")
+
+    def test_container_mode_reads_tg_and_weixin_tokens_from_stdin(self):
+        for command, arguments, method, attribute in (
+            ("add-tg-bot", ["--agent", "main", "--tg-token-stdin"], "add_tg_bot", "bot_token"),
+            (
+                "add-weixin-bot",
+                ["--agent", "main", "--ilink-bot-id", "bot@im.bot", "--bot-token-stdin"],
+                "add_weixin_bot",
+                "bot_token",
+            ),
+        ):
+            with self.subTest(command=command), patch.dict(
+                os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}
+            ):
+                with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+                    getattr(manager_cls.return_value, method).return_value = {"ok": True}
+                    manager_cls.return_value.restart_required = False
+                    with patch("sys.stdin", io.StringIO("token\n")), redirect_stdout(io.StringIO()):
+                        exit_code = agent_manage_main([command, *arguments])
+
+            self.assertEqual(exit_code, 0)
+            request = getattr(manager_cls.return_value, method).call_args.args[0]
+            self.assertEqual(getattr(request, attribute), "token")
+
+    def test_container_mode_rejects_global_path_overrides(self):
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    ["--config-path", "/tmp/unsafe.json", "current-model"]
+                )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["typeCode"], TYPE_CODE_INVALID_ARGUMENT)
+        self.assertNotIn("unsafe.json", payload["message"])
+
+    def test_secret_is_redacted_from_error_output(self):
+        secret = "never-print-this-secret"
+        with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:
+            manager_cls.return_value.add_tg_bot.side_effect = ValueError(f"failed: {secret}")
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = agent_manage_main(
+                    ["add-tg-bot", "--agent", "main", "--tg-token", secret]
+                )
+
+        self.assertEqual(exit_code, 1)
+        self.assertNotIn(secret, stdout.getvalue())
+        self.assertIn("[REDACTED]", stdout.getvalue())
 
     def test_agent_manage_delete_weixin_bot_dispatches_correctly(self):
         with patch("agent_manage.cli.InstanceManagerV2") as manager_cls:

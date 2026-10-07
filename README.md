@@ -1,5 +1,88 @@
 # Agent Manage
 
+## Prebuilt container image
+
+Template images split immutable Agent registration from order-specific runtime configuration:
+
+```bash
+# Image build: no ticket, token, or model secret is accepted.
+python3 scripts/agentctl.py add-agent \
+  --template-name unipay-claw-base \
+  --workspace-root /home/node/.openclaw/data
+
+# Container runtime: the model key is supplied only after the writable volume is mounted.
+printf '%s' "$MODEL_KEY" | python3 scripts/agentctl.py configure-instance \
+  --model-key-stdin
+```
+
+`add-agent` expands `template.yaml` multi-agent declarations and continues to use the
+official `openclaw agents add --non-interactive --json` command. `configure-instance`
+reads configured Agents and workspace paths from `openclaw.json`. It only applies
+runtime model, Gateway, tool, and workspace-policy settings; it never reads a
+template archive, registers an Agent, or populates a workspace. Legacy
+`--template-name` and `--agent-zip` arguments remain accepted but are ignored.
+The compatibility `create-instance` command uses the same internal registration and
+configuration stages and continues to register missing Agents. Prebuilt Agent images
+retain their template archive under the container template root so this compatibility
+path remains available after seed initialization.
+All three commands accept `--base-url https://server-001.web.dolaio.cn/`. The value
+must be an HTTP(S) site root without a path, query, fragment, or credentials; it is
+normalized with a trailing slash and written into the managed runtime policy for
+every affected Agent workspace.
+For an already-running container, `add-agent` can optionally receive
+`--template-zip-url` and `--template-zip-sha256`. The URL must use HTTPS; the
+archive is streamed into the persistent template directory, validated, and
+atomically replaces the local `{template_name}.zip` only for a successful add.
+
+Build assets are under `container-image/`. The build command accepts the template
+zip directly and always runs the DockerManager-compatible runtime validator:
+
+```powershell
+.\container-image\build-prebuilt-image.ps1 `
+  -TemplateIdentify unipay-claw-base `
+  -TemplateArchive C:\artifacts\unipay-claw-base.zip `
+  -ImageTag unitag/openclaw-unipay-claw-base:poc
+```
+
+The build defaults to DockerManager's pinned OpenClaw `2026.7.1-1` digest and targets
+`linux/amd64`. A different immutable base can be supplied with `-OpenClawImage` and
+its corresponding label with `-OpenClawVersion`. At runtime, the entrypoint merges
+the secret-free `/opt/unitag/openclaw-seed` into `/home/node/.openclaw`; runtime
+configuration wins recursively, so DockerManager-owned settings are preserved.
+See `docs/prebuilt-agent-image.md` for publishing, labels, safety invariants, and
+troubleshooting.
+
+## Container runtime (Execute v1)
+
+When DockerManager executes AgentManager inside a managed Container, it sets
+`UNITAG_AGENT_MANAGER_RUNTIME=container`. Existing commands and VPS behavior
+are unchanged. In this mode AgentManager never invokes `systemctl --user`; a
+successful operation that changes Gateway configuration returns the additive
+top-level JSON field `restartRequired: true`. DockerManager owns the subsequent
+Container restart and readiness check.
+
+DockerManager should pass each sensitive value as the single stdin payload and
+use the corresponding switch. Plaintext switches remain supported for existing
+direct/VPS callers, but cannot be combined with their stdin variants.
+
+```bash
+printf '%s' "$MODEL_KEY" | python3 scripts/agentctl.py create-instance \
+  --template-name unipay-claw-base --model-key-stdin
+
+printf '%s' "$TG_TOKEN" | python3 scripts/agentctl.py add-tg-bot \
+  --agent main --tg-token-stdin
+
+printf '%s' "$WEIXIN_TOKEN" | python3 scripts/agentctl.py add-weixin-bot \
+  --agent main --ilink-bot-id bot-001 --bot-token-stdin
+
+printf '%s' "$APP_SECRET" | python3 scripts/agentctl.py add-feishu-bot \
+  --agent main --app-id cli_xxx --app-secret-stdin
+```
+
+In Container runtime, `--openclaw-bin`, `--project-dir`, `--template-root`, and
+`--config-path` are rejected. The image and Container environment supply those
+paths, so a command cannot redirect AgentManager outside the managed instance.
+
 入口：
 
 ```bash
@@ -185,7 +268,7 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 - 如果当前商店没有官方 `openai/gpt-image-2`，图片使用的 `openai` provider 特例回退到同环境的 `/aigateway/v1`，不添加 `test` 路径；其他 provider 仍使用当前商店 `baseUrl`
 - provider ID 为 `openai` 时固定使用 OpenClaw 的 `openai-responses` API 适配器；其他 OpenAI-compatible provider 保留模型目录声明的 API 类型，默认回退仍为 `openai-completions`
 - 初始化会向各 agent workspace 的 `AGENTS.md` 写入精简的受管运行规则，包括命令安全、IPv4 公网附件、`nginx-delivery` 交付要求和图片默认质量；`image_generate` 默认使用 `quality: "low"`，可通过 `--image-quality low|medium|high|auto` 调整
-- `create-instance` 可选传入 `--base-url https://server-001.web.dolaio.cn/`；传入后，受管运行规则会优先声明当前主机的公网文件根地址，并要求 `MEDIA:` 将 `/var/www/html/` 下的文件映射为该域名下的公网 URL；未传时保持原有规则不变
+- `create-instance` 可选传入 `--base-url https://server-001.web.dolaio.cn/`；传入后，受管运行规则会优先声明当前主机的公网文件根地址，并要求 `MEDIA:` 将公共目录下的文件映射为该域名下的公网 URL；容器模式使用 `/home/node/.openclaw/workspace/public/`，VPS 模式使用 `/var/www/html/`
 - 内置公共 Skill 会同步到 `~/.openclaw/skills/`；当前包含 `nginx-delivery`，用于将明确公开的交付文件、网页和静态资源部署到 nginx、更新索引并返回经过 IPv4 验证的公网 URL
 - 模型 `input` 只会写入 npm stable OpenClaw `2026.7.1-2` 支持的 `text`、`image`；`video`、`audio` 和未知值会被过滤，如果过滤后为空或原值格式错误，则回退为 `["text"]`
 - `agents.defaults.models` 会按当前拉取到的模型重建
@@ -323,8 +406,9 @@ python3 scripts/agentctl.py create-instance \
   `tools.agentToAgent.allow`；同时设置 `tools.sessions.visibility = all`
 - 批量追加完成后会为本批次全部 workspace 同步与 `create-instance` 相同的受管运行规则和内置公共 Skill；默认图片质量为 `low`
 - `add-agents` 同样支持可选 `--base-url https://server-001.web.dolaio.cn/`；传入后会为本批次全部 workspace 写入与 `create-instance` 相同的公网文件根地址和 `MEDIA:` 映射规则，未传时保持原有规则不变
+- 每个 `--agents` JSON 条目可选传入 `template_zip_url` 和 `template_zip_sha256`；下载只接受 HTTPS，落盘前会校验大小、SHA-256（传入时）以及模板归档安全规则
 - 批量追加完成后不额外执行 `openclaw gateway restart`
-- 返回体会显式给出 `restart_required = false` 和空的 `post_batch_actions`
+- 实际新增至少一个 Agent 时返回 `restart_required = true`，全部为已存在 Agent 而跳过时返回 `false`；执行方据此决定是否重启 Gateway
 
 ### 远程执行
 
@@ -369,7 +453,7 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py add-agents \
     "requested_count": 2,
     "added_count": 1,
     "skipped_count": 1,
-    "restart_required": false,
+    "restart_required": true,
     "post_batch_actions": [],
     "agents": [
       {

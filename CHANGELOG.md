@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- 预制镜像 seed 支持与非空运行目录深度合并，保留 DockerManager 运行时配置，并通过 marker 保持幂等和中断恢复。
+- seed 默认写入无秘密的 `gateway.mode=local` 与 token auth 模式，使 Gateway 可在运行时 Token 环境变量下直接启动。
+- 镜像布局协议升级到 v2；构建脚本接受任意模板 zip，并强制执行真实 Gateway readiness、Agent、配置合并、Token 不落盘和 labels 验证。
+- 新增一键构建、验证、推送并输出 immutable digest 的发布脚本及操作文档。
+
+## 0.5.0 - 2026-09-01
+
+- 新增 `add-agent` 与 `configure-instance`，将模板 Agent 预注册和订单运行时秘密配置分离；`create-instance` 保持兼容。
+- `configure-instance` 只接受已预制的主 Agent 与附属 Agent，缺失时稳定失败且不会隐式调用 `openclaw agents add`。
+- 新增固定 `linux/amd64` 的预制镜像构建资产，默认锁定 DockerManager 当前 OpenClaw 镜像 digest，并携带模板、OpenClaw、AgentManager 和布局协议 labels。
+- 新增 `/opt/unitag/openclaw-seed` 空卷初始化机制、中断恢复和 seed 秘密扫描；模型密钥、Gateway Token 和认证资料只允许在容器运行时注入。
+
 ## 0.4.0 - 2026-08-22
 
 - 将 3000 多行单体管理器拆分为模型、模板与 workspace、渠道、Gateway、公共核心和顶层编排模块；`InstanceManagerV2`、CLI、方法名和返回结构保持兼容。

@@ -767,6 +767,7 @@ class CreateInstanceV2Test(unittest.TestCase):
 
         self.assertIsNone(without_base_url["base_url"])
         self.assertNotIn("public file base URL", old_policy)
+        self.assertIn("public file root is `/var/www/html/`", old_policy)
         self.assertEqual(
             with_base_url["base_url"],
             "https://server-001.web.dolaio.cn/",
@@ -784,6 +785,40 @@ class CreateInstanceV2Test(unittest.TestCase):
             new_policy.index("This host's public file base URL"),
             new_policy.index("Preserve existing and unrelated changes"),
         )
+
+    def test_container_runtime_policy_uses_container_public_root(self):
+        runner = FakeRunner()
+        with patch.dict(os.environ, {"UNITAG_AGENT_MANAGER_RUNTIME": "container"}):
+            manager = InstanceManagerV2(runner)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            manager._configure_runtime_policy(
+                [workspace],
+                quality="low",
+                base_url="https://server-001.web.dolaio.cn/",
+            )
+            policy = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "public file root is `/home/node/.openclaw/workspace/public/`",
+            policy,
+        )
+        self.assertNotIn("`/var/www/html/`", policy)
+
+    def test_nginx_delivery_skill_documents_both_runtime_roots(self):
+        skill_path = (
+            Path(__file__).resolve().parents[1]
+            / "agent_manage"
+            / "common_skills"
+            / "nginx-delivery"
+            / "SKILL.md"
+        )
+        skill = skill_path.read_text(encoding="utf-8")
+
+        self.assertIn("/home/node/.openclaw/workspace/public/", skill)
+        self.assertIn("/var/www/html/", skill)
 
     def test_create_instance_populates_workspace_and_overlays_template(self):
         runner = FakeRunner(
@@ -838,7 +873,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                         "web": {
                             "search": {
                                 "region": "us",
-                            }
+                            },
+                            "fetch": {
+                                "maxBytes": 1024,
+                            },
                         },
                     },
                     "models": {
@@ -895,6 +933,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
+            self.assertTrue(result["restart_required"])
             self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
             self.assertEqual(result["additional_agents"], [])
             self.assertIsInstance(result["gateway_token"], str)
@@ -966,7 +1005,10 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(saved_config["tools"]["exec"]["security"], "full")
             self.assertEqual(saved_config["tools"]["exec"]["timeout"], 30)
             self.assertEqual(saved_config["tools"]["web"]["search"], {"enabled": False})
-            self.assertEqual(saved_config["tools"]["web"]["fetch"], {"enabled": True})
+            self.assertEqual(
+                saved_config["tools"]["web"]["fetch"],
+                {"enabled": True, "useTrustedEnvProxy": True, "maxBytes": 1024},
+            )
             self.assertEqual(
                 saved_config["tools"]["agentToAgent"],
                 {
@@ -977,13 +1019,28 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(saved_config["tools"]["sessions"]["visibility"], "all")
             self.assertNotIn("legacy", saved_config["models"]["providers"])
             self.assertEqual(result["template_dir"], str(template_dir.resolve()))
-            self.assertIn("elapsed_ms", result["steps"][0])
+            self.assertIsInstance(result["total_elapsed_ms"], float)
+            self.assertEqual(result["steps"][0]["step"], "request.prepare")
+            self.assertTrue(all("elapsed_ms" in step for step in result["steps"]))
+            archive_step = next(
+                step for step in result["steps"] if step["step"] == "template.archive.inspect"
+            )
+            self.assertEqual(archive_step["result"]["archive_source"], "local")
+            self.assertEqual(archive_step["result"]["archive_bytes"], archive_path.stat().st_size)
+            self.assertIsNone(archive_step["result"]["future_network_download_elapsed_ms"])
+            prepare_step = next(
+                step for step in result["steps"] if step["step"] == "template.prepare"
+            )
+            self.assertIn("zip_extract_elapsed_ms", prepare_step["result"])
+            self.assertIn("template_copy_elapsed_ms", prepare_step["result"])
+            self.assertIn("template.manifest.parse", [step["step"] for step in result["steps"]])
             self.assertEqual(
-                result["steps"][1]["result"]["command"],
+                next(step for step in result["steps"] if step["step"] == "agents.add")["result"]["command"],
                 f"openclaw agents add base --workspace {workspace.resolve()} --non-interactive --json --model openai/gpt-5",
             )
-            self.assertEqual(result["steps"][3]["step"], "models.fetch_catalog")
-            self.assertEqual(result["steps"][4]["step"], "config.configure_models")
+            self.assertIn("agents.resolve_additional", [step["step"] for step in result["steps"]])
+            self.assertEqual(next(step for step in result["steps"] if step["step"] == "models.fetch_catalog")["step"], "models.fetch_catalog")
+            self.assertEqual(next(step for step in result["steps"] if step["step"] == "config.configure_models")["step"], "config.configure_models")
             self.assertEqual(result["steps"][-1]["step"], "workspace.configure_image_generation")
             self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
             self.assertEqual(result["steps"][-3]["step"], "config.configure_gateway_auth")
@@ -1165,9 +1222,13 @@ class CreateInstanceV2Test(unittest.TestCase):
         self.assertEqual(
             [item["step"] for item in result["steps"]],
             [
+                "request.prepare",
+                "template.archive.inspect",
                 "template.prepare",
+                "template.manifest.parse",
                 "agents.add",
                 "workspace.populate",
+                "agents.resolve_additional",
                 "models.fetch_catalog",
                 "config.configure_models",
                 "config.preserve_gateway_auth",
@@ -1301,14 +1362,22 @@ class CreateInstanceV2Test(unittest.TestCase):
             },
         )
         self.assertEqual(saved_config["tools"]["sessions"]["visibility"], "all")
-        self.assertEqual(result["steps"][0]["step"], "template.prepare")
-        self.assertEqual(result["steps"][1]["step"], "agents.add")
-        self.assertEqual(result["steps"][2]["step"], "workspace.populate")
-        self.assertEqual(result["steps"][3]["step"], "agents.add[legal-contract-reader]")
-        self.assertEqual(result["steps"][4]["step"], "workspace.populate[legal-contract-reader]")
-        self.assertEqual(result["steps"][5]["step"], "agents.add[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][6]["step"], "workspace.populate[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][7]["step"], "models.fetch_catalog")
+        self.assertEqual(result["steps"][0]["step"], "request.prepare")
+        step_names = [step["step"] for step in result["steps"]]
+        for expected in [
+            "template.archive.inspect",
+            "template.prepare",
+            "template.manifest.parse",
+            "agents.resolve_additional",
+            "template.manifest.parse[legal-contract-reader]",
+            "agents.add[legal-contract-reader]",
+            "workspace.populate[legal-contract-reader]",
+            "template.manifest.parse[legal-risk-reviewer]",
+            "agents.add[legal-risk-reviewer]",
+            "workspace.populate[legal-risk-reviewer]",
+            "models.fetch_catalog",
+        ]:
+            self.assertIn(expected, step_names)
 
     def test_configure_models_can_write_cn_gateway_base_url(self):
         runner = FakeRunner()
@@ -1385,9 +1454,11 @@ class CreateInstanceV2Test(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
-            self.assertEqual(result["steps"][1]["step"], "libraries.ensure")
-            self.assertEqual(result["steps"][1]["result"]["libraries"][0]["action"], "continue")
-            self.assertEqual(result["steps"][2]["step"], "common_skills.install")
+            libraries_step = next(step for step in result["steps"] if step["step"] == "libraries.ensure")
+            self.assertEqual(libraries_step["result"]["libraries"][0]["action"], "continue")
+            self.assertIn("elapsed_ms", libraries_step["result"]["libraries"][0])
+            self.assertIn("verify_before_elapsed_ms", libraries_step["result"]["libraries"][0])
+            self.assertIn("common_skills.install", [step["step"] for step in result["steps"]])
             self.assertEqual(
                 (
                     config_path.parent
@@ -1501,7 +1572,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 (workspace / "skills" / "weather" / "SKILL.md").read_text(encoding="utf-8"),
                 "zip weather\n",
             )
-            self.assertIn("template.prepare", result["steps"][0]["step"])
+            self.assertIn("template.prepare", result["steps"][2]["step"])
             self.assertEqual(result["steps"][-1]["step"], "workspace.configure_image_generation")
             self.assertEqual(result["steps"][-2]["step"], "config.configure_tools")
 
@@ -1551,9 +1622,9 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertEqual(result["mode"], "reconciled")
             self.assertEqual(result["gateway_token"], "existing-gateway-token")
             self.assertTrue(result["gateway_token_preserved"])
-            self.assertEqual(result["steps"][1]["step"], "agents.add")
+            self.assertEqual(result["steps"][4]["step"], "agents.add")
             self.assertEqual(
-                result["steps"][1]["result"],
+                result["steps"][4]["result"],
                 {
                     "skipped": True,
                     "reason": "agent_exists",
@@ -1561,7 +1632,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                result["steps"][5]["step"],
+                next(step for step in result["steps"] if step["step"] == "config.preserve_gateway_auth")["step"],
                 "config.preserve_gateway_auth",
             )
             saved_config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -1715,9 +1786,9 @@ class CreateInstanceV2Test(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertIsInstance(result["gateway_token"], str)
-            self.assertEqual(result["steps"][2]["step"], "workspace.populate")
+            self.assertEqual(result["steps"][5]["step"], "workspace.populate")
             self.assertEqual(
-                result["steps"][2]["result"],
+                result["steps"][5]["result"],
                 {
                     "skipped": True,
                     "reason": "workspace_not_empty",
@@ -1747,7 +1818,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 template_root=str(template_root),
                 config_path=str(config_path),
             )
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as raised:
                 manager.create_instance(
                     CreateInstanceRequest(
                         template_name="base",
@@ -1815,7 +1886,7 @@ class CreateInstanceV2Test(unittest.TestCase):
                 template_root=str(template_root),
                 config_path=str(config_path),
             )
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as raised:
                 manager.create_instance(
                     CreateInstanceRequest(
                         template_name="base",
@@ -1825,6 +1896,10 @@ class CreateInstanceV2Test(unittest.TestCase):
                 )
 
             self.assertFalse(workspace.exists())
+            failure = json.loads(str(raised.exception))
+            self.assertIsInstance(failure["total_elapsed_ms"], float)
+            self.assertTrue(failure["rollback"])
+            self.assertTrue(all("elapsed_ms" in item for item in failure["rollback"]))
 
     def test_create_instance_dry_run_keeps_workspace_unmodified(self):
         runner = FakeRunner(dry_run=True)
@@ -2086,7 +2161,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["added_count"], 2)
             self.assertEqual(result["skipped_count"], 0)
-            self.assertFalse(result["restart_required"])
+            self.assertTrue(result["restart_required"])
             self.assertEqual(result["post_batch_actions"], [])
             self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
             self.assertEqual(
@@ -2124,14 +2199,17 @@ class CreateInstanceV2Test(unittest.TestCase):
                     ],
                 ],
             )
-            self.assertEqual(result["steps"][0]["step"], "template.prepare[base]")
-            self.assertEqual(result["steps"][1]["step"], "agents.add[base]")
-            self.assertEqual(result["steps"][2]["step"], "workspace.populate[base]")
-            self.assertEqual(result["steps"][3]["step"], "template.prepare[demo]")
-            self.assertEqual(result["steps"][4]["step"], "agents.add[demo]")
-            self.assertEqual(result["steps"][5]["step"], "workspace.populate[demo]")
-            self.assertEqual(result["steps"][6]["step"], "config.configure_tools")
-            self.assertEqual(result["steps"][7]["step"], "workspace.configure_image_generation")
+            step_names = [step["step"] for step in result["steps"]]
+            for expected in [
+                "template.archive.inspect[base]", "template.prepare[base]",
+                "template.manifest.parse[base]", "agents.add[base]",
+                "workspace.populate[base]", "template.archive.inspect[demo]",
+                "template.prepare[demo]", "template.manifest.parse[demo]", "agents.add[demo]",
+            ]:
+                self.assertIn(expected, step_names)
+            self.assertIn("workspace.populate[demo]", step_names)
+            self.assertIn("config.configure_tools", step_names)
+            self.assertIn("workspace.configure_image_generation", step_names)
             for policy_path in [
                 tmp_path / "data" / "base" / "AGENTS.md",
                 tmp_path / "custom-demo" / "AGENTS.md",
@@ -2267,14 +2345,17 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "allow": ["main", "legal-team", "legal-contract-reader", "legal-risk-reviewer"],
             },
         )
-        self.assertEqual(result["steps"][0]["step"], "template.prepare[legal-team]")
-        self.assertEqual(result["steps"][1]["step"], "agents.add[legal-team]")
-        self.assertEqual(result["steps"][2]["step"], "workspace.populate[legal-team]")
-        self.assertEqual(result["steps"][3]["step"], "agents.add[legal-contract-reader]")
-        self.assertEqual(result["steps"][4]["step"], "workspace.populate[legal-contract-reader]")
-        self.assertEqual(result["steps"][5]["step"], "agents.add[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][6]["step"], "workspace.populate[legal-risk-reviewer]")
-        self.assertEqual(result["steps"][7]["step"], "config.configure_tools")
+        step_names = [step["step"] for step in result["steps"]]
+        for expected in [
+            "template.archive.inspect[legal-team]", "template.prepare[legal-team]",
+            "template.manifest.parse[legal-team]", "agents.add[legal-team]",
+            "workspace.populate[legal-team]", "template.manifest.parse[legal-contract-reader]",
+            "agents.add[legal-contract-reader]", "workspace.populate[legal-contract-reader]",
+        ]:
+            self.assertIn(expected, step_names)
+        self.assertIn("agents.add[legal-risk-reviewer]", step_names)
+        self.assertIn("workspace.populate[legal-risk-reviewer]", step_names)
+        self.assertIn("config.configure_tools", step_names)
 
     def test_add_agents_skips_existing_agent_and_keeps_running(self):
         runner = FakeRunner()
@@ -2309,6 +2390,7 @@ class CreateInstanceV2Test(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["added_count"], 1)
             self.assertEqual(result["skipped_count"], 1)
+            self.assertTrue(result["restart_required"])
             self.assertEqual(
                 (tmp_path / "data" / "base" / "SOUL.md").read_text(encoding="utf-8"),
                 "base soul\n",
@@ -2336,10 +2418,129 @@ class CreateInstanceV2Test(unittest.TestCase):
                     ]
                 ],
             )
-            self.assertEqual(result["steps"][0]["step"], "template.prepare[base]")
-            self.assertEqual(result["steps"][1]["step"], "agents.add[base]")
-            self.assertEqual(result["steps"][2]["step"], "workspace.populate[base]")
+            step_names = [step["step"] for step in result["steps"]]
+            self.assertIn("template.archive.inspect[base]", step_names)
+            self.assertIn("template.prepare[base]", step_names)
+            self.assertIn("agents.add[base]", step_names)
+            self.assertIn("workspace.populate[base]", step_names)
             self.assertIn("agent exists, skip add: base", runner.logs)
+
+    def test_add_agents_pure_skip_does_not_require_restart(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            template_root.mkdir(parents=True)
+            self._write_archive(template_root / "base.zip", {"SOUL.md": "base soul\n"})
+            config_path = tmp_path / "openclaw.json"
+            config_path.write_text(
+                json.dumps({"agents": {"list": [{"id": "base"}]}}),
+                encoding="utf-8",
+            )
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            result = manager.add_agents(
+                AddAgentsRequest(
+                    agents=[AddAgentRequest(agent_name="base")],
+                    workspace_root=str(tmp_path / "data"),
+                )
+            )
+
+            self.assertEqual(result["added_count"], 0)
+            self.assertEqual(result["skipped_count"], 1)
+            self.assertFalse(result["restart_required"])
+
+    def test_add_agents_restores_existing_template_directory_after_failure(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            existing_template = template_root / "base"
+            existing_template.mkdir(parents=True)
+            (existing_template / "old.txt").write_text("old", encoding="utf-8")
+            self._write_archive(template_root / "base.zip", {"new.txt": "new"})
+            config_path = tmp_path / "openclaw.json"
+            config_path.write_text(json.dumps({"agents": {"list": []}}), encoding="utf-8")
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            with patch.object(
+                manager,
+                "_load_template_manifest_for_timed_step",
+                side_effect=RuntimeError("manifest failed"),
+            ), self.assertRaises(RuntimeError):
+                manager.add_agents(
+                    AddAgentsRequest(
+                        agents=[AddAgentRequest(agent_name="base")],
+                        workspace_root=str(tmp_path / "data"),
+                    )
+                )
+
+            self.assertEqual((existing_template / "old.txt").read_text(encoding="utf-8"), "old")
+            self.assertFalse((existing_template / "new.txt").exists())
+
+    def test_add_agents_rolls_back_batch_when_late_configuration_fails(self):
+        runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            template_root = tmp_path / "template"
+            existing_template = template_root / "base"
+            existing_template.mkdir(parents=True)
+            (existing_template / "old-template.txt").write_text("old", encoding="utf-8")
+            archive_path = template_root / "base.zip"
+            self._write_archive(archive_path, {"old-archive.txt": "old archive"})
+            replacement_archive = tmp_path / "downloaded.zip"
+            self._write_archive(replacement_archive, {"new-template.txt": "new"})
+            config_path = tmp_path / "openclaw.json"
+            original_config = json.dumps({"agents": {"list": []}}, indent=2)
+            config_path.write_text(original_config, encoding="utf-8")
+            workspace = tmp_path / "data" / "base"
+            manager = FailingWorkspaceDefaultsManager(
+                runner,
+                template_root=str(template_root),
+                config_path=str(config_path),
+            )
+
+            with patch(
+                "agent_manage.template_download.download_template_archive",
+                return_value=replacement_archive,
+            ), self.assertRaises(RuntimeError):
+                manager.add_agents(
+                    AddAgentsRequest(
+                        agents=[
+                            AddAgentRequest(
+                                agent_name="base",
+                                template_zip_url="https://example.test/base.zip",
+                            )
+                        ],
+                        workspace_root=str(tmp_path / "data"),
+                    )
+                )
+
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(archive.namelist(), ["old-archive.txt"])
+                self.assertEqual(archive.read("old-archive.txt"), b"old archive")
+            self.assertEqual(
+                (existing_template / "old-template.txt").read_text(encoding="utf-8"),
+                "old",
+            )
+            self.assertFalse((existing_template / "new-template.txt").exists())
+            self.assertFalse(workspace.exists())
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original_config)
+            self.assertIn(
+                ["openclaw", "agents", "delete", "base", "--force", "--json"],
+                runner.calls,
+            )
 
     def test_add_agents_appends_agent_to_existing_agent_to_agent_allow(self):
         runner = FakeRunner()
@@ -2476,12 +2677,23 @@ class CreateInstanceV2Test(unittest.TestCase):
                     ],
                 ],
             )
-            self.assertEqual(result["steps"][1]["step"], "libraries.ensure[demo]")
+            libraries_step = next(step for step in result["steps"] if step["step"] == "libraries.ensure[demo]")
             self.assertEqual(
-                result["steps"][1]["result"]["libraries"][0]["action"],
+                libraries_step["result"]["libraries"][0]["action"],
                 "installed",
             )
-            self.assertEqual(result["steps"][2]["step"], "common_skills.install[demo]")
+            self.assertIn(
+                "install_elapsed_ms",
+                libraries_step["result"]["libraries"][0],
+            )
+            self.assertIn(
+                "verify_after_elapsed_ms",
+                libraries_step["result"]["libraries"][0],
+            )
+            self.assertIn(
+                "common_skills.install[demo]",
+                [step["step"] for step in result["steps"]],
+            )
             self.assertEqual(
                 result["agents"][0]["result"]["libraries_ensure"]["libraries"][0]["installed_after"],
                 True,
@@ -3696,6 +3908,158 @@ class CreateInstanceV2Test(unittest.TestCase):
                 "rollback.config.restore",
             )
             self.assertTrue(payload["rollback"][-1]["result"]["restored"])
+
+    def test_add_agent_registers_primary_and_manifest_agents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_root = root / "templates"
+            template_root.mkdir()
+            self._write_archive(
+                template_root / "team.zip",
+                {
+                    "template.yaml": "copyMode: multi_agent_template\n",
+                    "AGENTS.md": "primary\n",
+                    "agents/reviewer/AGENTS.md": "reviewer\n",
+                },
+            )
+            runner = FakeRunner()
+            self._write_host_config(root / "openclaw.json")
+            manager = InstanceManagerV2(
+                runner,
+                template_root=str(template_root),
+                config_path=str(root / "openclaw.json"),
+            )
+
+            result = manager.add_agent(
+                template_name="team",
+                workspace_root=str(root / "data"),
+            )
+
+            add_calls = [call for call in runner.calls if call[:3] == ["openclaw", "agents", "add"]]
+            self.assertEqual([call[3] for call in add_calls], ["team", "reviewer"])
+            self.assertEqual(result["added_count"], 2)
+
+    def test_configure_instance_rejects_missing_prebuilt_agent_without_using_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = FakeRunner()
+            self._write_host_config(root / "openclaw.json")
+            manager = InstanceManagerV2(
+                runner,
+                config_path=str(root / "openclaw.json"),
+            )
+
+            with patch.object(manager, "_prepare_template_dir") as prepare, self.assertRaises(
+                ValueError
+            ) as raised:
+                manager.configure_instance(
+                    CreateInstanceRequest(
+                        model_key="runtime-secret",
+                        agent_zip=str(root / "missing.zip"),
+                    )
+                )
+
+            self.assertIn("No prebuilt agents are configured", str(raised.exception))
+            prepare.assert_not_called()
+            self.assertFalse(
+                any(call[:3] == ["openclaw", "agents", "add"] for call in runner.calls)
+            )
+
+    def test_configure_instance_uses_prebuilt_multi_agent_seed_without_add(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "openclaw.json"
+            self._write_host_config(
+                config_path,
+                {
+                    "agents": {
+                        "list": [
+                            {"id": "team", "workspace": str(root / "data" / "team")},
+                            {"id": "reviewer", "workspace": str(root / "data" / "reviewer")},
+                        ]
+                    }
+                },
+            )
+            runner = FakeRunner()
+            for agent_name in ("team", "reviewer"):
+                workspace = root / "data" / agent_name
+                workspace.mkdir(parents=True)
+                (workspace / "AGENTS.md").write_text("prebuilt\n", encoding="utf-8")
+            manager = InstanceManagerV2(
+                runner,
+                config_path=str(config_path),
+            )
+
+            result = manager.configure_instance(
+                CreateInstanceRequest(
+                    model_key="runtime-secret",
+                    base_url="https://server-001.web.dolaio.cn",
+                    agent_zip=str(root / "missing.zip"),
+                )
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["mode"], "configured")
+            self.assertTrue(result["restart_required"])
+            self.assertEqual(result["agent_names"], ["team", "reviewer"])
+            self.assertNotIn("archive_path", result)
+            self.assertEqual(result["base_url"], "https://server-001.web.dolaio.cn/")
+            self.assertEqual(
+                json.loads(config_path.read_text(encoding="utf-8"))["tools"]["agentToAgent"]["allow"],
+                ["main", "team", "reviewer"],
+            )
+            for agent_name in ("team", "reviewer"):
+                policy = (root / "data" / agent_name / "AGENTS.md").read_text(encoding="utf-8")
+                self.assertIn("`https://server-001.web.dolaio.cn/`", policy)
+                self.assertIn("prebuilt", policy)
+            self.assertFalse(
+                any(call[:3] == ["openclaw", "agents", "add"] for call in runner.calls)
+            )
+            serialized_result = json.dumps(result, ensure_ascii=False)
+            self.assertNotIn("runtime-secret", serialized_result)
+            self.assertLess(len(serialized_result.encode("utf-8")), 512 * 1024)
+            self.assertTrue(all("elapsed_ms" in step for step in result["steps"]))
+
+    def test_configure_instance_preserves_gateway_token_on_retry_without_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "openclaw.json"
+            self._write_host_config(config_path, {
+                "agents": {"list": [{"id": "base", "workspace": str(root / "data" / "base")}]},
+                "gateway": {"auth": {"mode": "token", "token": "existing-token"}},
+            })
+            workspace = root / "data" / "base"
+            workspace.mkdir(parents=True)
+            manager = InstanceManagerV2(FakeRunner(), config_path=str(config_path))
+
+            request = CreateInstanceRequest(
+                template_name="unrelated-template",
+                model_key="runtime-secret",
+                agent_zip=str(root / "missing.zip"),
+            )
+            first = manager.configure_instance(request)
+            second = manager.configure_instance(request)
+
+            self.assertEqual(first["gateway_token"], "existing-token")
+            self.assertEqual(second["gateway_token"], "existing-token")
+            self.assertTrue(second["gateway_token_preserved"])
+            self.assertFalse(any("template." in step["step"] for step in second["steps"]))
+
+    def test_configure_instance_rolls_back_config_when_workspace_policy_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "openclaw.json"
+            self._write_host_config(config_path, {
+                "agents": {"list": [{"id": "base", "workspace": str(root / "missing-workspace")}]},
+            })
+            original_config = config_path.read_bytes()
+            manager = InstanceManagerV2(FakeRunner(), config_path=str(config_path))
+
+            with self.assertRaises(RuntimeError) as raised:
+                manager.configure_instance(CreateInstanceRequest(model_key="runtime-secret"))
+
+            self.assertIn("Workspace not found", str(raised.exception))
+            self.assertEqual(config_path.read_bytes(), original_config)
 
     def _write_archive(self, archive_path: Path, files):
         with zipfile.ZipFile(archive_path, "w") as archive:
