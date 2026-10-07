@@ -115,7 +115,7 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertEqual((self.workspace / "memory/day.md").read_text(), "user day\n")
         self.assertFalse((self.workspace / "USER.md").exists())
         self.assertEqual(self.config_path.read_bytes(), before)
-        self.assertTrue(result["restart_required"])
+        self.assertFalse(result["restart_required"])
         self.assertFalse(result["activation_verified"])
         backup = Path(result["backup_path"])
         self.assertEqual((backup / "openclaw.json").read_bytes(), before)
@@ -200,6 +200,26 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertFalse(result["template"]["skipped"])
         self.assertIn("dola/new", json.loads(self.config_path.read_text())["agents"]["defaults"]["models"])
         self.assertEqual(self.state()["version"], "1.0.0")
+
+    def test_default_refresh_never_calls_gateway_or_requires_restart(self):
+        for scope in ("both", "models_only", "template_only"):
+            for dry_run in (False, True):
+                with self.subTest(scope=scope, dry_run=dry_run):
+                    self.runner.calls.clear()
+                    self.runner.dry_run = dry_run
+                    request = (RefreshAgentRequest("demo", models_only=True)
+                               if scope == "models_only" else
+                               RefreshAgentRequest("demo", template_dir=str(self.source),
+                                                   template_only=scope == "template_only"))
+                    self.write_source("SOUL.md", f"updated {scope} {dry_run}\n")
+                    self.catalog["models_config"]["providers"]["dola"]["models"][1]["name"] = f"New {scope} {dry_run}"
+                    result = self.manager.refresh_agent(request)
+                    self.assertFalse(result["restart_required"])
+                    self.assertFalse(result["gateway_restarted"])
+                    self.assertFalse(result["activation_verified"])
+                    self.assertFalse(any("gateway" in args for args, _ in self.runner.calls))
+                    if not dry_run:
+                        self.assertEqual(self.runner.calls[0][0], ["openclaw", "config", "validate"])
 
     def test_validate_failure_precedes_live_writes(self):
         self.runner.fail_validate = True

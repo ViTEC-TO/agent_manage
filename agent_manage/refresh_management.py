@@ -118,7 +118,7 @@ class RefreshManagementMixin:
                       "changed_files": [{"path": str(item["target"]), "action": item["action"]} for item in plan],
                       "memory_preserved": True, "skipped": self.runner.dry_run,
                       "gateway_restarted": False, "activation_verified": False,
-                      "restart_required": bool(plan or candidate != config)}
+                      "restart_required": False}
             if self.runner.dry_run:
                 result["can_apply"] = not conflicts or request.replace_modified
                 return result

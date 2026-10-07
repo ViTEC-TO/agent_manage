@@ -96,8 +96,8 @@ python3 scripts/agentctl.py --dry-run refresh-agent --agent demo \
 python3 scripts/agentctl.py refresh-agent --agent demo \
   --agent-zip /path/to/demo.zip --restart
 
-# 只刷新环境的模型目录
-python3 scripts/agentctl.py refresh-agent --agent demo --models-only --restart
+# 只刷新环境的模型目录，默认不重启
+python3 scripts/agentctl.py refresh-agent --agent demo --models-only
 
 # 只升级模板，明确覆盖已经检查过的冲突文件；记忆仍保留
 python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
@@ -128,7 +128,10 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 - 写入前使用本机 `openclaw config validate` 校验候选配置。写入或重启检查失败时自动恢复旧配置、
   旧文件/版本记录并移除本次新增文件；结果报告 `rollback_ok`、备份位置及运行态恢复情况。
   环境锁防止多个刷新任务并发；发现配置或受影响文件在准备期间被改变会中止。
-- 默认不重启，返回 `restart_required` 和 `activation_verified: false`。
+- 默认不重启、不调用 Gateway RPC 确认热加载生效，刷新写入完成后即返回。
+  返回 `restart_required: false`、`gateway_restarted: false`、`activation_verified: false`；
+  `restart_required: false` 表示默认不要求重启，不代表已经验证运行态生效。
+  `--dry-run` 同样不检查运行态，不因预览存在变化而要求重启。
   `--restart` 重启当前环境 Gateway 后要求 RPC 检查成功；成功只确认 Gateway 可达，
   不代表新 Skill 已在已有会话中执行验证。重启影响该环境所有 agent。
   重启前会检查已安装 Gateway 服务的配置路径，无法确认与所选环境一致时中止，防止重启另一套环境。
