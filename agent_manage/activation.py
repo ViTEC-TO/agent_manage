@@ -35,6 +35,7 @@ class FlyActivationMixin:
         started_at = perf_counter()
         if self.runner.dry_run:
             result = self._configure_existing_instance(request)
+            result.pop("restart_required", None)
             return {**result, "activationRequired": False, "requestedConfigSha256": None,
                     "dryRun": True, "total_elapsed_ms": self._elapsed_ms(started_at)}
 
@@ -63,6 +64,7 @@ class FlyActivationMixin:
             staged = copy.copy(self)
             staged.config_path = stage_path
             result = staged._configure_existing_instance(replace(request, rollback_on_fail=False))
+            result.pop("restart_required", None)
             steps.extend(result["steps"])
             final_bytes = stage_path.read_bytes()
             digest = hashlib.sha256(final_bytes).hexdigest()

@@ -258,6 +258,7 @@ class ActivateInstanceTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(payload["activationRequired"])
         self.assertNotIn("activationRequired", payload["result"])
+        self.assertNotIn("restart_required", payload["result"])
         self.assertFalse(payload["restartRequired"])
         self.assertEqual(payload["result"]["requestedConfigSha256"], hashlib.sha256(self.config_path.read_bytes()).hexdigest())
         self.assertEqual(json.loads(self.config_path.read_bytes())["models"]["providers"]["unipay-fun"]["apiKey"], "model-secret")
