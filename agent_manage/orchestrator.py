@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Dict, List
 
 from .channel_management import ChannelManagementMixin
+from .activation import FlyActivationMixin
 from .gateway_management import GatewayManagementMixin
 from .manager_core import ManagerCore
 from .model_management import ModelManagementMixin
@@ -19,6 +20,7 @@ from .settings import normalize_image_quality, normalize_public_base_url, normal
 
 
 class InstanceManagerV2(
+    FlyActivationMixin,
     ChannelManagementMixin,
     ModelManagementMixin,
     GatewayManagementMixin,
