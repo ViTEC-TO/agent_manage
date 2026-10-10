@@ -17,6 +17,8 @@ from .models import AddAgentRequest, AddAgentsRequest, CreateInstanceRequest
 from .template_download import replace_template_archive
 from .provisioning import ProvisioningMixin
 from .settings import normalize_image_quality, normalize_public_base_url, normalize_shop
+from .skill_management import SkillManagementMixin
+from .refresh_management import RefreshManagementMixin
 
 
 class InstanceManagerV2(
@@ -24,6 +26,8 @@ class InstanceManagerV2(
     ChannelManagementMixin,
     ModelManagementMixin,
     GatewayManagementMixin,
+    SkillManagementMixin,
+    RefreshManagementMixin,
     ProvisioningMixin,
     ManagerCore,
 ):

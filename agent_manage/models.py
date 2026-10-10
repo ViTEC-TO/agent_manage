@@ -38,6 +38,28 @@ class AddAgentsRequest:
 
 
 @dataclass
+class AddSkillRequest:
+    agent_name: str | None = None
+    common: bool = False
+    skill_dir: str | None = None
+    skill_zip: str | None = None
+    skill_name: str | None = None
+    replace: bool = False
+
+
+@dataclass
+class RefreshAgentRequest:
+    agent_name: str
+    template_dir: str | None = None
+    agent_zip: str | None = None
+    template_name: str | None = None
+    models_only: bool = False
+    template_only: bool = False
+    replace_modified: bool = False
+    restart: bool = False
+
+
+@dataclass
 class AddTelegramBotRequest:
     agent_name: str
     bot_token: str

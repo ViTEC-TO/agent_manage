@@ -10,6 +10,7 @@ from .local import LocalRunner
 from .models import (
     AddAgentRequest,
     AddAgentsRequest,
+    AddSkillRequest,
     AddFeishuBotRequest,
     AddTelegramBotRequest,
     AddWeixinBotRequest,
@@ -18,6 +19,7 @@ from .models import (
     DeleteTelegramBotRequest,
     DeleteWeixinBotRequest,
     SetModelRequest,
+    RefreshAgentRequest,
 )
 from .orchestrator import InstanceManagerV2
 from .response import (
@@ -69,6 +71,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     add_agents.add_argument("--agents", required=True)
     add_agents.add_argument("--workspace-root", default="~/data")
     add_agents.add_argument("--base-url")
+
+    add_skill = subparsers.add_parser("add-skill")
+    skill_scope = add_skill.add_mutually_exclusive_group(required=True)
+    skill_scope.add_argument("--agent", help="target agent id")
+    skill_scope.add_argument("--common", action="store_true", help="install for this OpenClaw environment")
+    skill_source = add_skill.add_mutually_exclusive_group(required=True)
+    skill_source.add_argument("--skill-dir", help="skill directory containing SKILL.md")
+    skill_source.add_argument("--skill-zip", help="ZIP containing one skill")
+    add_skill.add_argument("--skill-name", help="destination directory name (defaults to source name)")
+    add_skill.add_argument("--replace", action="store_true", help="replace an existing skill directory")
+
+    refresh = subparsers.add_parser("refresh-agent")
+    refresh.add_argument("--agent", required=True)
+    refresh_source = refresh.add_mutually_exclusive_group()
+    refresh_source.add_argument("--template-dir")
+    refresh_source.add_argument("--agent-zip")
+    refresh.add_argument("--template-name")
+    refresh_scope = refresh.add_mutually_exclusive_group()
+    refresh_scope.add_argument("--models-only", action="store_true")
+    refresh_scope.add_argument("--template-only", action="store_true")
+    refresh.add_argument("--replace-modified", action="store_true", help="back up and replace conflicting template files; memory is always preserved")
+    refresh.add_argument("--restart", action="store_true", help="restart the environment gateway and require a successful RPC health check")
 
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
@@ -224,6 +248,32 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
             )
             print_json(_success_response(result, client))
+            return 0
+        if args.command == "refresh-agent":
+            result = client.refresh_agent(RefreshAgentRequest(
+                agent_name=args.agent,
+                template_dir=args.template_dir,
+                agent_zip=args.agent_zip,
+                template_name=args.template_name,
+                models_only=args.models_only,
+                template_only=args.template_only,
+                replace_modified=args.replace_modified,
+                restart=args.restart,
+            ))
+            print_json(build_success_response(result))
+            return 0
+        if args.command == "add-skill":
+            result = client.add_skill(
+                AddSkillRequest(
+                    agent_name=args.agent,
+                    common=args.common,
+                    skill_dir=args.skill_dir,
+                    skill_zip=args.skill_zip,
+                    skill_name=args.skill_name,
+                    replace=args.replace,
+                )
+            )
+            print_json(build_success_response(result))
             return 0
         if args.command == "add-tg-bot":
             result = client.add_tg_bot(
