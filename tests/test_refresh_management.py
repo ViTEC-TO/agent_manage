@@ -152,6 +152,107 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertEqual((Path(result["backup_path"]) / entry["backup_file"]).read_text(), "custom soul")
         self.assertEqual((self.workspace / "MEMORY.md").read_text(), "user memory\n")
 
+    def test_default_refresh_updates_existing_skill_without_baseline_and_backs_it_up(self):
+        source = self.write_source("skills/aihot/install.sh", "#!/bin/sh\necho new\n")
+        source.chmod(0o755)
+        target = self.workspace / "skills/aihot/install.sh"
+        target.parent.mkdir(parents=True)
+        target.write_text("#!/bin/sh\necho installed\n")
+        target.chmod(0o644)
+        self.write_source("BOOTSTRAP.md", "new bootstrap")
+
+        result = self.manager.refresh_agent(RefreshAgentRequest("demo", template_dir=str(self.source)))
+
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual(target.read_bytes(), source.read_bytes())
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
+        self.assertEqual((self.workspace / "BOOTSTRAP.md").read_text(), "new bootstrap")
+        config = json.loads(self.config_path.read_text())
+        self.assertIn("dola/new", config["agents"]["defaults"]["models"])
+        backup = Path(result["backup_path"])
+        manifest = json.loads((backup / "manifest.json").read_text())
+        entry = next(item for item in manifest["files"] if item["path"] == str(target))
+        self.assertEqual((backup / entry["backup_file"]).read_text(), "#!/bin/sh\necho installed\n")
+        self.assertEqual(entry["before"]["mode"], 0o644)
+        self.assertIn("workspace/skills/aihot/install.sh", self.state()["files"])
+        self.assertEqual((self.workspace / "MEMORY.md").read_text(), "user memory\n")
+        self.assertFalse(result["restart_required"])
+        self.assertFalse(any("gateway" in args for args, _ in self.runner.calls))
+
+    def test_skills_refresh_repairs_local_changes_even_when_template_is_unchanged(self):
+        self.write_source("skills/aihot/SKILL.md", "template skill")
+        script = self.write_source("skills/aihot/install.sh", "template script")
+        script.chmod(0o755)
+        self.write_source("skills/aihot/reference.md", "template reference")
+        self.manager.refresh_agent(self.request())
+        skill = self.workspace / "skills/aihot"
+        (skill / "SKILL.md").write_text("local change")
+        (skill / "install.sh").chmod(0o644)
+        (skill / "reference.md").unlink()
+        (skill / "extra.txt").write_text("user extra")
+
+        result = self.manager.refresh_agent(self.request())
+
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual(result["template"]["local_overrides"], [])
+        self.assertEqual((skill / "SKILL.md").read_text(), "template skill")
+        self.assertEqual(stat.S_IMODE((skill / "install.sh").stat().st_mode), 0o755)
+        self.assertEqual((skill / "reference.md").read_text(), "template reference")
+        self.assertEqual((skill / "extra.txt").read_text(), "user extra")
+
+    def test_new_skill_release_overwrites_and_removes_modified_managed_files(self):
+        self.write_source("skills/aihot/SKILL.md", "one")
+        obsolete = self.write_source("skills/aihot/obsolete.sh", "old template")
+        self.manager.refresh_agent(self.request())
+        skill = self.workspace / "skills/aihot"
+        (skill / "SKILL.md").write_text("local skill")
+        (skill / "obsolete.sh").write_text("local obsolete")
+        self.write_source("template.yaml", "version: 2.0.0\n")
+        self.write_source("skills/aihot/SKILL.md", "two")
+        obsolete.unlink()
+
+        result = self.manager.refresh_agent(self.request())
+
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual((skill / "SKILL.md").read_text(), "two")
+        self.assertFalse((skill / "obsolete.sh").exists())
+        self.assertEqual(self.state()["version"], "2.0.0")
+        manifest = json.loads((Path(result["backup_path"]) / "manifest.json").read_text())
+        entry = next(item for item in manifest["files"] if item["path"].endswith("obsolete.sh"))
+        self.assertEqual((Path(result["backup_path"]) / entry["backup_file"]).read_text(), "local obsolete")
+
+    def test_skill_dry_run_can_apply_without_baseline_and_never_writes(self):
+        self.write_source("skills/aihot/install.sh", "new")
+        target = self.workspace / "skills/aihot/install.sh"
+        target.parent.mkdir(parents=True)
+        target.write_text("old")
+        self.runner.dry_run = True
+
+        result = self.manager.refresh_agent(self.request())
+
+        self.assertTrue(result["can_apply"])
+        self.assertEqual(result["conflicts"], [])
+        self.assertIn({"path": str(target), "action": "update"}, result["changed_files"])
+        self.assertEqual(target.read_text(), "old")
+        self.assertFalse((self.config_path.parent / "agent-manage").exists())
+        self.assertFalse(self.runner.calls)
+
+    def test_skill_updates_do_not_bypass_other_template_conflicts(self):
+        self.write_source("skills/aihot/install.sh", "new")
+        target = self.workspace / "skills/aihot/install.sh"
+        target.parent.mkdir(parents=True)
+        target.write_text("old")
+        (self.workspace / "SOUL.md").write_text("user soul")
+        before = self.config_path.read_bytes()
+
+        with self.assertRaises(FileExistsError) as caught:
+            self.manager.refresh_agent(RefreshAgentRequest("demo", template_dir=str(self.source)))
+
+        conflicts = build_error_response(caught.exception)["error"]["details"]["conflicts"]
+        self.assertEqual(conflicts, [{"path": str(self.workspace / "SOUL.md"), "reason": "no_baseline"}])
+        self.assertEqual(target.read_text(), "old")
+        self.assertEqual(self.config_path.read_bytes(), before)
+
     def test_modified_or_user_deleted_file_conflicts_only_when_template_changes(self):
         self.manager.refresh_agent(self.request())
         (self.workspace / "SOUL.md").unlink()
@@ -370,6 +471,37 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertEqual((shared / "custom.txt").read_text(), "custom")
         self.assertFalse((self.workspace / "common-skills").exists())
         self.assertEqual(result["template"]["common_skills_scope"], "environment")
+
+    def test_public_and_private_skill_updates_preserve_protected_data_and_roll_back(self):
+        for prefix in ("skills/private", "common-skills/shared"):
+            self.write_source(f"{prefix}/SKILL.md", "new")
+            for relative in ("MEMORY.md", "memory/day.md", ".env", "credentials/key", "USER.md"):
+                self.write_source(f"{prefix}/{relative}", "template protected")
+        targets = [self.workspace / "skills/private", self.config_path.parent / "skills/shared"]
+        for target in targets:
+            target.mkdir(parents=True)
+            (target / "SKILL.md").write_text("existing")
+            (target / "MEMORY.md").write_text("user memory")
+            (target / ".env").write_text("user env")
+        self.runner.fail_health_once = True
+
+        with self.assertRaises(RuntimeError) as caught:
+            self.manager.refresh_agent(self.request(restart=True))
+
+        self.assertTrue(build_error_response(caught.exception)["error"]["details"]["rollback_ok"])
+        for target in targets:
+            self.assertEqual((target / "SKILL.md").read_text(), "existing")
+        self.assertFalse((self.config_path.parent / "agent-manage/agents/demo.json").exists())
+
+        result = self.manager.refresh_agent(self.request())
+        self.assertEqual(result["conflicts"], [])
+        for target in targets:
+            self.assertEqual((target / "SKILL.md").read_text(), "new")
+            self.assertEqual((target / "MEMORY.md").read_text(), "user memory")
+            self.assertEqual((target / ".env").read_text(), "user env")
+            self.assertFalse((target / "memory/day.md").exists())
+            self.assertFalse((target / "credentials/key").exists())
+            self.assertFalse((target / "USER.md").exists())
 
     def test_unchanged_refresh_does_not_create_duplicate_backup(self):
         first = self.manager.refresh_agent(self.request())

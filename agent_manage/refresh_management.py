@@ -381,10 +381,16 @@ class RefreshManagementMixin:
             before, after, old = _fingerprint(target), files.get(key), old_files.get(key)
             if before == after:
                 continue
-            if old is not None and old == after:
+            # Skills are template capabilities: refresh them even without an old
+            # baseline or when the installed copy was modified/deleted locally.
+            # The protected-path check above and transactional backups still apply.
+            template_skill = scope == "common" or Path(relative).parts[0] == "skills"
+            if not template_skill and old is not None and old == after:
                 overrides.append(str(target))
                 continue
-            conflict = (old is None and before is not None) or (old is not None and before != old)
+            conflict = not template_skill and (
+                (old is None and before is not None) or (old is not None and before != old)
+            )
             if conflict:
                 conflicts.append({"path": str(target), "reason": "no_baseline" if old is None else "locally_modified"})
                 if not force:
