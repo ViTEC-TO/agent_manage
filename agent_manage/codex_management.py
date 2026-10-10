@@ -127,31 +127,6 @@ class CodexManagementMixin:
                 raise
             return self._codex_result(state)
 
-    def _codex_set_chat_model(self, model_ref):
-        with self._refresh_lock(self.config_path.parent / "agent-manage"):
-            state = self._codex_read_state()
-            if state.get("status") != "active":
-                raise FileExistsError("Codex model switching was interrupted; run codex-logout to restore")
-            refs = {"openai/" + row["id"] for row in state["models"]}
-            if model_ref not in refs:
-                raise ValueError(f"Unsupported model '{model_ref}'. Allowed: {', '.join(sorted(refs))}")
-            original = self.config_path.read_bytes()
-            config = self._load_config()
-            agents = config.setdefault("agents", {})
-            self._codex_switch_chat_fields(agents.setdefault("defaults", {}), model_ref)
-            for agent in agents.get("list", []):
-                self._codex_switch_chat_fields(agent, model_ref)
-            steps = []
-            if not self.runner.dry_run:
-                validation = self._codex_validate(config)
-                if self.config_path.read_bytes() != original:
-                    raise RuntimeError("Config changed during Codex model switch; retry")
-                _private_json(self.config_path, config)
-                steps.append(self._command_step("config.validate", validation))
-            steps.append(self._build_step_payload("models.set", {
-                "ok": True, "skipped": self.runner.dry_run, "scope": "environment", "model_ref": model_ref}))
-            return steps
-
     def _codex_model_candidate(self, config, models, selected):
         candidate = deepcopy(config)
         providers = candidate.setdefault("models", {}).setdefault("providers", {})

@@ -22,12 +22,6 @@ class ModelManagementMixin:
     """Manage model catalogs and the model-related OpenClaw config surface."""
 
     def set_model(self, request: SetModelRequest) -> Dict[str, object]:
-        if self._codex_models_active():
-            steps = self._codex_set_chat_model(request.model_ref)
-            restart_result = self._restart_gateway_service()
-            return {"ok": True, "model_ref": request.model_ref, "steps": steps,
-                    "gateway_restart": self._build_step_payload("gateway.restart", restart_result)}
-
         supported_model_refs = self._supported_model_refs_from_config()
         if request.model_ref not in supported_model_refs:
             allowed = ", ".join(sorted(supported_model_refs))

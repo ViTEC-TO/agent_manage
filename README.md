@@ -248,6 +248,7 @@ agent-manage codex-logout
   模型 ID 依据 [OpenAI 官方 Codex 模型文档](https://learn.chatgpt.com/docs/models)，
   核对日期为 2026-10-10。列表是本地配置，不代表登录账号拥有全部模型权限。
   `codex-login` 不带模型参数；后续用 `set-model --model openai/<model ID>` 切换。
+  `set-model` 保持原有行为，只切全局默认模型；agent 自己指定的模型继续保留。
 - 普通 Codex provider 配置为 `openai`、`baseUrl: https://chatgpt.com/backend-api/codex`、
   `api: openai-chatgpt-responses`、`auth: oauth`、`agentRuntime: {id: openclaw}`。
   若原 `openai` provider 同时承载图片/音频 API，则保留其 API key 与原默认传输，
@@ -1361,9 +1362,9 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py agents-list
 
 - 只允许切换到当前 `~/.openclaw/openclaw.json` 已保存的受支持模型
 - 传参必须写完整模型引用，不接受简写
-- 普通模式直接执行 `openclaw models set <model_ref>`
+- 直接执行 `openclaw models set <model_ref>`
 - 用于切换当前默认模型
-- Codex 模式下只允许选择已安装的 Codex 模型，写入当前环境配置，并同步全部 agent 的聊天、utility / heartbeat / subagent 模型；原模型恢复记录保留
+- agent 自己指定的模型不随全局默认模型切换
 - 切换成功后会通过 `systemctl --user stop/start openclaw-gateway.service` 重启 gateway，并轮询进程退出和端口监听
 
 ### 远程执行

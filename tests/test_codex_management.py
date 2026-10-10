@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from agent_manage.cli import main
 from agent_manage.local import LocalRunner
-from agent_manage.models import RefreshAgentRequest, SetModelRequest
+from agent_manage.models import RefreshAgentRequest
 from agent_manage.orchestrator import InstanceManagerV2
 import test_refresh_management as refresh_tests
 
@@ -128,54 +128,6 @@ class CodexManagementTest(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), config)
         self.assertEqual(self.manager._codex_state_path().read_bytes(), backup)
         self.assertEqual(stat.S_IMODE(self.manager._codex_state_path().stat().st_mode), 0o600)
-
-    def test_set_model_switches_all_agents_and_restores_original_models(self):
-        self.login()
-        backup = self.manager._codex_state_path().read_bytes()
-        installed_models = json.loads(self.path.read_text())["models"]
-        with patch.object(self.manager, "_restart_gateway_service", return_value={"ok": True}) as restart:
-            result = self.manager.set_model(SetModelRequest(model_ref="openai/gpt-6-luna"))
-        restart.assert_called_once_with()
-        self.assertEqual(result["model_ref"], "openai/gpt-6-luna")
-        changed = json.loads(self.path.read_text())
-        defaults = changed["agents"]["defaults"]
-        for target in [defaults, *changed["agents"]["list"]]:
-            self.assertEqual(target["model"], {"primary": "openai/gpt-6-luna", "fallbacks": []})
-            if "utilityModel" in target:
-                self.assertEqual(target["utilityModel"], "openai/gpt-6-luna")
-            if "heartbeat" in target:
-                self.assertEqual(target["heartbeat"]["model"], "openai/gpt-6-luna")
-            if "subagents" in target:
-                self.assertEqual(target["subagents"]["model"], "openai/gpt-6-luna")
-        self.assertEqual(changed["models"], installed_models)
-        self.assertEqual(changed["auth"], self.original["auth"])
-        self.assertEqual(self.auth_file.read_bytes(), self.auth_bytes)
-        self.assertEqual(self.manager._codex_state_path().read_bytes(), backup)
-        before_repeat = self.path.read_bytes()
-        self.assertEqual(self.login()["model"], "openai/gpt-6-luna")
-        self.assertEqual(self.path.read_bytes(), before_repeat)
-        self.fixture.runner.dry_run = True
-        preview = self.manager.set_model(SetModelRequest(model_ref="openai/gpt-6-astra"))
-        self.assertTrue(preview["gateway_restart"]["result"]["skipped"])
-        self.assertEqual(self.path.read_bytes(), before_repeat)
-        self.assertEqual(self.manager._codex_state_path().read_bytes(), backup)
-        self.fixture.runner.dry_run = False
-        self.manager.codex_logout()
-        self.assertEqual(json.loads(self.path.read_text()), self.original)
-
-    def test_set_model_rejects_non_codex_models_and_preserves_config_on_validation_failure(self):
-        self.login()
-        original, backup = self.path.read_bytes(), self.manager._codex_state_path().read_bytes()
-        with patch.object(self.manager, "_restart_gateway_service") as restart:
-            for model in ("custom/mine", "gpt-6-luna", "openai/gpt-image-2"):
-                with self.assertRaises(ValueError):
-                    self.manager.set_model(SetModelRequest(model_ref=model))
-            self.fixture.runner.fail_validate = True
-            with self.assertRaisesRegex(RuntimeError, "invalid config"):
-                self.manager.set_model(SetModelRequest(model_ref="openai/gpt-6-luna"))
-            restart.assert_not_called()
-        self.assertEqual(self.path.read_bytes(), original)
-        self.assertEqual(self.manager._codex_state_path().read_bytes(), backup)
 
     def test_failed_validation_changes_nothing(self):
         original = self.path.read_bytes()
