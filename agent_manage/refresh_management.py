@@ -471,6 +471,8 @@ class RefreshManagementMixin:
             raise ValueError("Cannot verify that the installed Gateway service uses this config; refresh without --restart or fix the service mapping")
 
     def _refresh_model_candidate(self, config):
+        if self._codex_models_active():
+            return deepcopy(config), {"skipped": True, "reason": "codex_login_active", "scope": "environment"}
         candidate = deepcopy(config)
         providers = config.get("models", {}).get("providers", {})
         managed = {}
