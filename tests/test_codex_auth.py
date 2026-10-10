@@ -253,7 +253,7 @@ class GlobalCodexTest(unittest.TestCase):
             with self.assertRaisesRegex(FileExistsError, "codex-logout"):
                 self.manager.codex_login()
 
-    def test_runtime_resolution_follows_server_symlink_and_rejects_newer_version(self):
+    def test_runtime_resolution_accepts_july_stable_and_rejects_other_versions(self):
         package = self.path.parent / "fake-openclaw"
         package.mkdir()
         metadata = package / "package.json"
@@ -264,11 +264,18 @@ class GlobalCodexTest(unittest.TestCase):
         link.symlink_to(binary)
         self.manager.runner = LocalRunner(str(link))
         self.manager.bin = str(link)
-        for version in ("2026.7.1", "2026.7.1-1", "2026.7.1-2"):
+        modules = ("dist/plugin-sdk/provider-auth.js", "dist/extensions/openai/openai-chatgpt-device-code.js")
+        for relative in modules:
+            module = package / relative
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.write_text("")
+        for version in ("2026.7.1", "2026.7.1-1", "2026.7.1-2", "2026.7.35", "2026.7.36", "2026.7.35-1"):
             with self.subTest(version=version):
                 metadata.write_text(json.dumps({"name": "openclaw", "version": version}))
                 self.assertEqual(self.manager._codex_bridge_input("inspect")["package"], str(package))
-        for name, version in (("openclaw", "2026.9.2"), ("other-package", "2026.7.1")):
+        for name, version in (("other-package", "2026.7.1"), *[("openclaw", version) for version in (
+                "2026.6.35", "2026.8.35", "2026.9.2", "2027.7.1", "2026.7.2-beta.5", "2026.7.35-rc.1",
+                "2026.7.35garbage", "2026.7.35\n", "2026.7.0", None)]):
             with self.subTest(name=name, version=version):
                 metadata.write_text(json.dumps({"name": name, "version": version}))
                 with self.assertRaisesRegex(ValueError, "server OpenClaw") as error:
@@ -276,6 +283,29 @@ class GlobalCodexTest(unittest.TestCase):
                 self.assertIn(repr(name), str(error.exception))
                 self.assertIn(repr(version), str(error.exception))
                 self.assertIn(str(package), str(error.exception))
+        metadata.write_text(json.dumps({"name": "openclaw", "version": "2026.7.35"}))
+        for relative in modules:
+            module = package / relative
+            module.unlink()
+            with self.assertRaisesRegex(ValueError, "missing the required Codex SDK module"):
+                self.manager._codex_bridge_input("inspect")
+            module.write_text("")
+
+    def test_missing_sdk_exports_fail_before_auth_store_mutation(self):
+        import subprocess
+        package = self.path.parent / "incompatible-openclaw"
+        sdk = package / "dist/plugin-sdk/provider-auth.js"
+        sdk.parent.mkdir(parents=True)
+        (package / "package.json").write_text(json.dumps({"type": "module"}))
+        marker = self.path.parent / "auth-mutated"
+        sdk.write_text("import fs from 'node:fs';\nexport function updateAuthProfileStoreWithLock(){"
+                       f"fs.writeFileSync({json.dumps(str(marker))},'changed'); throw new Error('unexpected');" + "}")
+        result = subprocess.run(["node", str(Path(__file__).resolve().parents[1] / "agent_manage/codex_auth_bridge.mjs")],
+                                input=json.dumps({"package": str(package), "action": "inspect"}),
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["error_code"], "CODEX_SDK_INCOMPATIBLE")
+        self.assertFalse(marker.exists())
 
 
 @unittest.skipUnless(os.environ.get("AGENT_MANAGE_TEST_OPENCLAW_BIN"), "Set pinned server OpenClaw for native auth tests")
@@ -316,6 +346,46 @@ for(const dir of process.argv.slice(2)){
         self.assertTrue(all(agent["shared_auth"] for agent in status["agents"]))
         self.assertNotIn("test-existing-access", json.dumps(status))
         self.assertNotIn("test-existing-refresh", json.dumps(status))
+        # Exercise the pinned image plugin with a mocked service response:
+        # a retained media API key must not take precedence over global OAuth.
+        routing = self.path.parent / "check-media-routing.mjs"
+        routing.write_text("""
+import fs from 'node:fs';
+import {pathToFileURL} from 'node:url';
+const cfg=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,'utf8'));
+let imageCalls=0,audioCalls=0;
+globalThis.fetch=async(url,opts)=>{
+ const headers=new Headers(opts.headers);
+ if(String(url)==='https://chatgpt.com/backend-api/codex/responses'){
+   if(headers.get('authorization')!=='Bearer test-existing-access')throw new Error('Wrong image credential');
+   const body=JSON.parse(opts.body);
+   if(body.tools[0].type!=='image_generation'||body.tools[0].model!=='gpt-image-2')throw new Error('Wrong image tool');
+   imageCalls++;
+   return new Response('data: '+JSON.stringify({type:'response.completed',response:{output:[{type:'image_generation_call',result:'aW1hZ2U='}]}})+'\\n\\n',{headers:{'content-type':'text/event-stream'}});
+ }
+ if(String(url)==='https://api.dola.io/aigateway/mystore/v1/audio/transcriptions'){
+   if(headers.get('authorization')!=='Bearer test-image-key')throw new Error('Wrong audio credential');
+   audioCalls++;
+   return new Response(JSON.stringify({text:'mock transcript'}),{headers:{'content-type':'application/json'}});
+ }
+ throw new Error('Unexpected media endpoint');
+};
+// The SDK deliberately uses undici unless an injected fetch is marked as mocked.
+globalThis.fetch.mock={};
+const imageModule=await import(pathToFileURL(process.argv[2]+'/dist/extensions/openai/image-generation-provider.js'));
+const image=await imageModule.buildOpenAIImageGenerationProvider().generateImage({
+ cfg,agentDir:process.argv[3],model:'gpt-image-2',prompt:'test',quality:'low'});
+if(image.images.length!==1)throw new Error('Missing mock image');
+const audioModule=await import(pathToFileURL(process.argv[2]+'/dist/extensions/openai/media-understanding-provider.js'));
+const entry=cfg.tools.media.audio.models[0];
+const audio=await audioModule.transcribeOpenAiAudio({buffer:Buffer.alloc(2048),fileName:'test.wav',mime:'audio/wav',
+ apiKey:cfg.models.providers.openai.apiKey,baseUrl:entry.baseUrl,model:entry.model,timeoutMs:5000});
+if(audio.text!=='mock transcript'||imageCalls!==1||audioCalls!==1)throw new Error('Media route failed');
+""")
+        media_check = subprocess.run(["node", str(routing), payload["package"], payload["main"]], capture_output=True,
+                                    env={**os.environ, "OPENCLAW_STATE_DIR": str(self.path.parent),
+                                         "OPENCLAW_CONFIG_PATH": str(self.path)}, timeout=20)
+        self.assertEqual(media_check.returncode, 0, media_check.stderr.decode())
         # New agents inherit the main account without copying the refresh token.
         config = json.loads(self.path.read_text())
         config["agents"]["list"].append({"id": "new"})

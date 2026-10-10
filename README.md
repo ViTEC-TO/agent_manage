@@ -227,8 +227,10 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 
 ## codex-login / codex-logout / codex-status
 
-这三个命令管理当前整个 OpenClaw 环境的 Codex 登录、模型切换和登录状态，
-适配服务器旧版 OpenClaw `2026.7.1` / `2026.7.1-1` / `2026.7.1-2`，不适配本机新版。
+这三个命令管理当前整个 OpenClaw 环境的 Codex 登录、模型切换和登录状态。
+Codex 全局认证允许服务器 OpenClaw `2026.7.*` 正式版及数字打包修订（例如 `2026.7.1-2`），
+不接受 beta/rc，也不放开 8、9 月及其他年份版本。运行时检查所需原生 SDK 模块和认证函数；
+版本范围允许进入流程，不代表未来维护版本均已验证。原生集成已校验 `2026.7.1`、`-1`、`-2` 和 `2026.7.35`。
 不需要 `--agent`、`--model`、`--login-id`、API key 或 OAuth 回调地址。
 
 ```bash
@@ -280,7 +282,16 @@ Server API 需要允许并转发上述三个命令；本仓库不包含网页或
 - 普通 Codex provider 使用 `openai`、`baseUrl: https://chatgpt.com/backend-api/codex`、
   `api: openai-chatgpt-responses`、`auth: oauth`、`agentRuntime: {id: openclaw}`。
   原 OpenAI provider 同时承载图片/音频 API 时，保留 API key 与原默认传输，
-  对新增的 Codex 模型条目单独设置 Codex 传输；图片、音频配置保留。
+  provider 默认传输也切为 Codex，聊天和绘图优先用全局 OAuth。
+  绘图选择 `openai/gpt-image-2`，保留图片超时等参数，并清空原绘图 fallback；
+  通过旧版原生 `image_generate` 的 Codex Responses 路径执行，实际权限与额度由账号决定。
+  保留原 API key，原非 Codex 模型条目单独保存原传输和地址。
+  已校验的服务器 `2026.7.1` / `-1` / `-2` / `2026.7.35` 的音频认证仍要求 API key，音频与 TTS 不切 OAuth：
+  已配置的 OpenAI 音频条目保留原地址；未显式指定音频模型且原 OpenAI provider 有 key 时，
+  固定 `gpt-4o-transcribe` 到原 API 地址，避免音频请求误发到 Codex 聊天接口。
+  其他显式音频 provider、CLI、已有禁用状态保持原配置。
+  登出恢复原 provider、绘图和音频配置；已登录旧配置再次执行 `codex-login` 即应用绘图策略，
+  不重新授权、不替换最初的模型备份。`result.media` 返回绘图切换与音频保留原因。
 - `models` 返回 Codex 聊天模型；`update-model` 和 `refresh-agent` 的模型部分
   返回 `skipped: true, reason: codex_login_active`，模板刷新继续。
   `configure-instance` 等重新配置 provider 的操作需要先登出。
