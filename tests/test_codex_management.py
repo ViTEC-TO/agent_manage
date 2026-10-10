@@ -47,7 +47,7 @@ class CodexManagementTest(unittest.TestCase):
         self.auth_bytes = self.auth_file.read_bytes()
 
     def login(self):
-        return self.manager.codex_login()
+        return self.manager._codex_configure_models()
 
     def state(self):
         return json.loads(self.manager._codex_state_path().read_text())
@@ -110,7 +110,7 @@ class CodexManagementTest(unittest.TestCase):
         self.assertEqual(provider["auth"], "oauth")
         self.assertEqual(provider["agentRuntime"], {"id": "openclaw"})
         self.assertNotIn("apiKey", provider)
-        self.manager.codex_logout()
+        self.manager._codex_restore_models()
         self.assertEqual(json.loads(self.path.read_text()), config)
 
     def test_environment_switch_does_not_require_an_existing_agent(self):
@@ -118,7 +118,7 @@ class CodexManagementTest(unittest.TestCase):
         config["agents"]["list"] = []
         self.path.write_text(json.dumps(config))
         self.assertEqual(self.login()["switched_agents"], [])
-        self.manager.codex_logout()
+        self.manager._codex_restore_models()
         self.assertEqual(json.loads(self.path.read_text()), config)
 
     def test_repeated_switch_keeps_original_backup(self):
@@ -161,7 +161,7 @@ class CodexManagementTest(unittest.TestCase):
         config["agents"]["list"].reverse()
         self.path.write_text(json.dumps(config))
         self.auth_file.write_bytes(b"later credentials owned by OpenClaw")
-        result = self.manager.codex_logout()
+        result = self.manager._codex_restore_models()
         restored = json.loads(self.path.read_text())
         self.assertTrue(result["models_restored"])
         self.assertNotIn("credentials_removed", result)
@@ -172,7 +172,7 @@ class CodexManagementTest(unittest.TestCase):
         self.assertEqual(restored["agents"]["defaults"]["imageGenerationModel"]["timeoutMs"], 240000)
         self.assertEqual(self.auth_file.read_bytes(), b"later credentials owned by OpenClaw")
         self.assertFalse(self.manager._codex_state_path().exists())
-        self.assertFalse(self.manager.codex_logout()["models_restored"])
+        self.assertFalse(self.manager._codex_restore_models()["models_restored"])
 
     def test_restore_cleans_new_agents_codex_selectors(self):
         self.login()
@@ -182,7 +182,7 @@ class CodexManagementTest(unittest.TestCase):
             {"id": "new-custom", "model": {"primary": "custom/mine", "fallbacks": ["openai/gpt-6-sol"]}},
         ])
         self.path.write_text(json.dumps(config))
-        self.manager.codex_logout()
+        self.manager._codex_restore_models()
         agents = json.loads(self.path.read_text())["agents"]["list"]
         self.assertEqual(agents[-2], {"id": "new"})
         self.assertEqual(agents[-1]["model"], {"primary": "custom/mine", "fallbacks": []})
@@ -191,10 +191,10 @@ class CodexManagementTest(unittest.TestCase):
         self.login()
         self.fixture.runner.fail_validate = True
         with self.assertRaisesRegex(RuntimeError, "invalid config"):
-            self.manager.codex_logout()
+            self.manager._codex_restore_models()
         self.assertTrue(self.manager._codex_models_active())
         self.fixture.runner.fail_validate = False
-        self.assertTrue(self.manager.codex_logout()["models_restored"])
+        self.assertTrue(self.manager._codex_restore_models()["models_restored"])
 
     def test_model_refresh_does_not_overwrite_codex_configuration(self):
         self.login()
@@ -211,7 +211,7 @@ class CodexManagementTest(unittest.TestCase):
         self.fixture.runner.dry_run = True
         before = self.path.read_bytes()
         self.assertEqual(self.login()["status"], "preview")
-        self.assertTrue(self.manager.codex_logout()["skipped"])
+        self.assertTrue(self.manager._codex_restore_models()["skipped"])
         self.assertEqual(self.path.read_bytes(), before)
         self.assertFalse(self.manager._codex_state_path().exists())
         self.assertEqual(self.fixture.runner.calls, [])
@@ -239,7 +239,7 @@ class CodexManagementTest(unittest.TestCase):
             "baseUrl": self.manager.CODEX_BASE_URL, "auth": "oauth",
             "agentRuntime": {"id": "openclaw"}, "models": self.state()["models"]}
         self.manager._codex_validate(pure)
-        self.manager.codex_logout()
+        self.manager._codex_restore_models()
         self.assertEqual(self.auth_file.read_bytes(), self.auth_bytes)
 
 

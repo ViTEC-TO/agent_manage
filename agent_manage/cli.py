@@ -25,6 +25,7 @@ from .orchestrator import InstanceManagerV2
 from .response import (
     CliArgumentError,
     JsonArgumentParser,
+    TYPE_CODE_ACCEPTED,
     build_error_response,
     build_success_response,
     print_json,
@@ -93,6 +94,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     subparsers.add_parser("codex-login")
     subparsers.add_parser("codex-logout")
+    subparsers.add_parser("codex-status")
 
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
@@ -241,10 +243,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.command == "codex-login":
             result = client.codex_login()
-            print_json(build_success_response(result))
+            print_json(build_success_response(result, type_code=TYPE_CODE_ACCEPTED if result.get("status") in ("starting", "pending") else 1))
             return 0
         if args.command == "codex-logout":
             print_json(build_success_response(client.codex_logout()))
+            return 0
+        if args.command == "codex-status":
+            print_json(build_success_response(client.codex_status()))
             return 0
         if args.command == "refresh-agent":
             result = client.refresh_agent(RefreshAgentRequest(

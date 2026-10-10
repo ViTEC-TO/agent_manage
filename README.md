@@ -225,47 +225,74 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 - 此版只接管单 agent 的文件升级，不升级 OpenClaw 程序、不自动安装程序依赖或执行模板脚本。
   `requiredLibraries` 中必需依赖须能通过 `bin` 检查已存在；团队模板需拆分单 agent 包分别刷新。
 
-## codex-login / codex-logout
+## codex-login / codex-logout / codex-status
 
-这两个命令只管理模型配置。实际 ChatGPT/Codex 授权登录、凭据保存和 Token 刷新由
-OpenClaw 自身处理，agent_manage 不调用登录接口、不查询账号目录、不读写认证存储。
-配置格式适配服务器旧版 OpenClaw `2026.7.1-1` / `2026.7.1-2`。
-一次切换作用于当前整个环境，全部 agent 的聊天模型、已有 utility / heartbeat / subagent
-模型选择一起切换，不需要指定 agent。
+这三个命令管理当前整个 OpenClaw 环境的 Codex 登录、模型切换和登录状态，
+适配服务器旧版 OpenClaw `2026.7.1-1` / `2026.7.1-2`，不适配本机新版。
+不需要 `--agent`、`--model`、`--login-id`、API key 或 OAuth 回调地址。
 
 ```bash
-# 安装新的 Codex 模型配置，备份原模型，统一切换默认聊天模型
+# 发起全局设备码登录；已有主认证可直接接管为全局登录
 agent-manage codex-login
 
-# 使用已有切模型命令选择其他聊天模型
+# 查询设备码、授权进度和当前全局认证状态
+agent-manage codex-status
+
+# 使用原来的切模型命令选择其他聊天模型
 agent-manage set-model --model openai/gpt-6-luna
 
-# 恢复切换前的模型配置；不退出 OpenClaw 的账号登录
+# 取消等待中的登录，清除整个环境的 Codex OAuth，恢复原模型配置
 agent-manage codex-logout
 ```
 
-- 当前写入 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`，默认选择 `gpt-6.1-sol`。
-  模型 ID 依据 [OpenAI 官方 Codex 模型文档](https://learn.chatgpt.com/docs/models)，
-  核对日期为 2026-10-10。列表是本地配置，不代表登录账号拥有全部模型权限。
-  `codex-login` 不带模型参数；后续用 `set-model --model openai/<model ID>` 切换。
-  `set-model` 保持原有行为，只切全局默认模型；agent 自己指定的模型继续保留。
-- 普通 Codex provider 配置为 `openai`、`baseUrl: https://chatgpt.com/backend-api/codex`、
+前端配合流程：
+
+Server API 需要允许并转发上述三个命令；本仓库不包含网页或 Server API 的路由代码。
+
+1. 调用 Server API 执行 `codex-login`。等待授权时协议 `typeCode: 2`，
+   `result.status` 为 `starting` 或 `pending`；命令只等待设备码准备最多约 2 秒，
+   不阻塞等待用户完成授权。首次本地 SDK 初始化另需少量时间。
+2. 从结果读取 `verification_url`、`user_code`、`expires_at`（Unix 毫秒），
+   显示设备码并打开 OpenAI 授权页。若状态仍是 `starting`，先查询 `codex-status` 取码。
+   用户必须在 OpenAI 页面完成批准，账号/工作区需允许设备码授权。
+   此流程复用 OpenClaw 原生登录，不需要 Dola 申请 OAuth client 或接收浏览器跳转回调。
+3. 每隔 2–3 秒查询 `codex-status`。设备码在 `result.login` 中；
+   `result.logged_in: true`、`result.status: logged_in` 表示已完成当前环境的共享认证。
+   后台使用 OpenClaw 原生 SDK 写入认证存储并自动切模型，前端不用传回 code 或 token。
+   `failed` / `expired` 可以再次执行登录；要取消或换账号，先 `codex-logout` 再登录。
+
+状态查询返回 `logged_in`、`auth_status`（`valid` / `refreshable` / `expired` / `missing`）、
+`account`（可解析的邮箱、账号 ID、套餐与 Token 到期时间）、`agents[].shared_auth`、
+`models_switched`、`login`。查询只检查本地原生存储，不请求模型或额度接口，
+不等待授权、不主动刷新 Token。`refreshable` 表示 access 已到期但保留 refresh token，
+是否仍能刷新由 OpenClaw 实际请求时确定；本地状态不保证服务端未撤销授权或具体模型可用。
+所有命令的公开结果都不返回 access/refresh token。
+
+- 登录成功后，OAuth 凭据仅存入 OpenClaw 的主认证存储，全部现有和后续 agent 继承它。
+  清除现有 agent 独立的 OpenAI/Codex OAuth，统一认证顺序；保留其他 provider 和静态 API key。
+  使用旧版 SDK 的原生存储事务，不直接复制 Token 到每个 agent、不直接覆盖 `auth-profiles.json`。
+  重复登录复用等待中的任务或已登录的账号，不覆盖原模型备份。
+- 授权完成后安装 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`，
+  默认 `gpt-6.1-sol`。模型 ID 依据 [OpenAI 官方 Codex 模型文档](https://learn.chatgpt.com/docs/models)，
+  核对日期为 2026-10-10；配置列表不代表账号拥有全部模型权限。
+  当前全部 agent 的聊天模型、已有 utility / heartbeat / subagent 选择一起切换。
+  `set-model` 保持原有行为，只切全局默认模型，agent 独立指定的模型继续保留。
+- 普通 Codex provider 使用 `openai`、`baseUrl: https://chatgpt.com/backend-api/codex`、
   `api: openai-chatgpt-responses`、`auth: oauth`、`agentRuntime: {id: openclaw}`。
-  若原 `openai` provider 同时承载图片/音频 API，则保留其 API key 与原默认传输，
-  在新增的 Codex 模型条目上分别设置上述 `baseUrl`、`api` 和 `agentRuntime`，由 OAuth profile
-  供聊天使用。`provider_mode: mixed_api_and_codex` 表示此种混合配置，避免把原图片请求误发到 Codex。
-- 图片、音频保留原配置。这个命令不验证账号媒体权限，不把原媒体 API 自动改成 Codex。
-- 成功返回 `status: configured`、`mode: models_only`、`model`、`models`、
-  `supported_model_refs`、`switched_agents`，不再有设备码或 `login_id`。
-  `models` 命令此时返回配置的 Codex 聊天模型；`update-model` 和 `refresh-agent` 的模型部分
-  返回 `skipped: true, reason: codex_login_active`，模板刷新继续，防止把 Codex 模式覆盖回 Dola。
+  原 OpenAI provider 同时承载图片/音频 API 时，保留 API key 与原默认传输，
+  对新增的 Codex 模型条目单独设置 Codex 传输；图片、音频配置保留。
+- `models` 返回 Codex 聊天模型；`update-model` 和 `refresh-agent` 的模型部分
+  返回 `skipped: true, reason: codex_login_active`，模板刷新继续。
   `configure-instance` 等重新配置 provider 的操作需要先登出。
-- 模型恢复记录保存在 `<config 目录>/agent-manage/codex-login.json`，权限 `0600`，
-  上级目录权限 `0700`。重复调用不会覆盖原模型备份，也不会重置已通过 `set-model` 选择的模型。
-  恢复时只修改模型相关字段，保留之后新增的渠道、认证等其他设置。
-- `codex-login` / `codex-logout` 默认不重启、不探测 Gateway，不清空已有会话。
-  `restart_required: false`、`activation_verified: false`；成功只表示模型配置写入完成，
-  不表示已经登录或验证模型调用。`--dry-run` 不写入配置或恢复记录。
+- `codex-logout` 清除当前环境的全部 OpenAI/Codex OAuth（包括 agent 独立账号），
+  保留媒体 API key，恢复原模型及认证顺序。取消任务后，后台迟到的授权结果不能重新写入。
+  这是当前环境的本地登出，不撤销 OpenAI 网站或其他设备上的登录会话；
+  已开始的模型请求可能仍会完成，已有会话不清空。
+- 恢复记录、后台任务保存在 `<config 目录>/agent-manage/codex-*.json`，
+  文件权限 `0600`、目录 `0700`。凭据事务的临时备份仅供失败回滚，成功后删除。
+  如进程中断留下事务记录，执行 `codex-logout` 清理后再登录。
+- 默认不重启、不探测 Gateway，`restart_required: false`、`activation_verified: false`。
+  `--dry-run` 预览登录/登出，不启动授权，不写配置或认证。
 
 ## create-instance
 
