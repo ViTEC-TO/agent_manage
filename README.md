@@ -179,8 +179,8 @@ python3 scripts/agentctl.py --dry-run refresh-agent --agent demo \
 python3 scripts/agentctl.py refresh-agent --agent demo \
   --agent-zip /path/to/demo.zip --restart
 
-# 只刷新环境的模型目录
-python3 scripts/agentctl.py refresh-agent --agent demo --models-only --restart
+# 只刷新环境的模型目录，默认不重启
+python3 scripts/agentctl.py refresh-agent --agent demo --models-only
 
 # 只升级模板，明确覆盖已经检查过的冲突文件；记忆仍保留
 python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
@@ -194,11 +194,15 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 - `--models-only` 和 `--template-only` 互斥；模型刷新沿用已配置的 Dola 环境、商店和密钥/SecretRef，
   保留自定义 provider、模型别名、默认模型/回退、agent 覆盖、工具权限、渠道、绑定和 Gateway Token。
   新目录删除了仍在使用的模型，或与自定义 provider 重名时，中止刷新。
-- 模板按文件比较「旧基线 / 当前实例 / 新模板」。更新未修改的模板文件，删除新版中移除的受管文件，
+- 私有 `skills/` 和公共 Skill 按模板更新：同路径文件内容或权限不同就备份后覆盖，
+  不要求旧基线，也不需要 `--replace-modified`；实例缺失的模板 Skill 文件会补齐。
+  新版移除的已受管 Skill 文件会删除，用户额外添加且未被模板接管的文件保留。
+  Skill 内的记忆、凭据、`.env` 等仍遵守下述保护规则。
+- 其他模板文件按「旧基线 / 当前实例 / 新模板」比较。更新未修改的模板文件，删除新版中移除的受管文件，
   保留用户额外添加的文件。模板未变化的用户自定义保留；双方都变动时返回冲突，默认整次不执行。
   `--replace-modified` 允许备份后替换冲突文件。
 - 首次刷新没有可信的旧版本，`version_before` 为 `null`；不会把缓存模板的版本当作已安装版本。
-  已有文件与新模板不同会冲突。成功刷新后，记录模板名称、实际应用的版本、文件哈希/权限和独立基线。
+  已有的非 Skill 文件与新模板不同会冲突。成功刷新后，记录模板名称、实际应用的版本、文件哈希/权限和独立基线。
   现有 `create-instance` 流程尚不建立此刷新基线，首次刷新按上述规则接管。
   对 `x.y.z` 数字版本拒绝降级，防止旧缓存把已升级的实例刷回旧版本。
 - `MEMORY.md`、`memory/`、`USER.md`、`TOOLS.md`、会话、凭据和 `.env` 始终排除，
@@ -211,7 +215,10 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 - 写入前使用本机 `openclaw config validate` 校验候选配置。写入或重启检查失败时自动恢复旧配置、
   旧文件/版本记录并移除本次新增文件；结果报告 `rollback_ok`、备份位置及运行态恢复情况。
   环境锁防止多个刷新任务并发；发现配置或受影响文件在准备期间被改变会中止。
-- 默认不重启，返回 `restart_required` 和 `activation_verified: false`。
+- 默认不重启、不调用 Gateway RPC 确认热加载生效，刷新写入完成后即返回。
+  返回 `restart_required: false`、`gateway_restarted: false`、`activation_verified: false`；
+  `restart_required: false` 表示默认不要求重启，不代表已经验证运行态生效。
+  `--dry-run` 同样不检查运行态，不因预览存在变化而要求重启。
   `--restart` 重启当前环境 Gateway 后要求 RPC 检查成功；成功只确认 Gateway 可达，
   不代表新 Skill 已在已有会话中执行验证。重启影响该环境所有 agent。
   重启前会检查已安装 Gateway 服务的配置路径，无法确认与所选环境一致时中止，防止重启另一套环境。

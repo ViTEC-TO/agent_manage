@@ -118,7 +118,7 @@ class RefreshManagementMixin:
                       "changed_files": [{"path": str(item["target"]), "action": item["action"]} for item in plan],
                       "memory_preserved": True, "skipped": self.runner.dry_run,
                       "gateway_restarted": False, "activation_verified": False,
-                      "restart_required": bool(plan or candidate != config)}
+                      "restart_required": False}
             if self.runner.dry_run:
                 result["can_apply"] = not conflicts or request.replace_modified
                 return result
@@ -381,10 +381,16 @@ class RefreshManagementMixin:
             before, after, old = _fingerprint(target), files.get(key), old_files.get(key)
             if before == after:
                 continue
-            if old is not None and old == after:
+            # Skills are template capabilities: refresh them even without an old
+            # baseline or when the installed copy was modified/deleted locally.
+            # The protected-path check above and transactional backups still apply.
+            template_skill = scope == "common" or Path(relative).parts[0] == "skills"
+            if not template_skill and old is not None and old == after:
                 overrides.append(str(target))
                 continue
-            conflict = (old is None and before is not None) or (old is not None and before != old)
+            conflict = not template_skill and (
+                (old is None and before is not None) or (old is not None and before != old)
+            )
             if conflict:
                 conflicts.append({"path": str(target), "reason": "no_baseline" if old is None else "locally_modified"})
                 if not force:
