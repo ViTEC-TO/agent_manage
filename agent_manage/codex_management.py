@@ -1,4 +1,4 @@
-"""Reversible Codex model configuration; OpenClaw owns authentication."""
+"""Reversible model configuration and environment-wide Codex OAuth."""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ from copy import deepcopy
 from pathlib import Path
 
 from .refresh_management import _atomic_bytes, _private_json
+from .codex_auth import CodexAuthMixin
 
 
-class CodexManagementMixin:
+class CodexManagementMixin(CodexAuthMixin):
     CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
     CODEX_API = "openai-chatgpt-responses"
     # Official Codex models as of 2026-10-10. This is a configuration list,
@@ -87,45 +88,48 @@ class CodexManagementMixin:
                 "media": {"image_generation_switched": False, "audio_switched": False},
                 "restart_required": False, "gateway_restarted": False, "activation_verified": False}
 
-    def codex_login(self):
-        selected = self.CODEX_DEFAULT_MODEL
+    def _codex_configure_models(self):
         with self._refresh_lock(self.config_path.parent / "agent-manage"):
-            state = self._codex_read_state()
-            if state.get("restore"):
-                if state["status"] != "active":
-                    raise FileExistsError("Codex model switching was interrupted; run codex-logout to restore")
-                state["selected_model"] = self._load_config()["agents"]["defaults"]["model"]["primary"]
-                return self._codex_result(state, preview=self.runner.dry_run)
+            return self._codex_configure_models_locked()
 
-            original = self.config_path.read_bytes()
-            original_mode = stat.S_IMODE(self.config_path.stat().st_mode)
-            config = self._load_config()
-            models = self._codex_model_definitions()
-            candidate, restore, hybrid = self._codex_model_candidate(config, models, selected)
-            state = {"config_path": str(self.config_path), "status": "applying", "restore": restore,
-                     "selected_model": "openai/" + selected, "models": models,
-                     "switched_agents": [agent["id"] for agent in restore["agents"]],
-                     "provider_mode": "mixed_api_and_codex" if hybrid else "codex"}
-            if self.runner.dry_run:
-                return self._codex_result(state, preview=True)
-            self._codex_validate(candidate)
+    def _codex_configure_models_locked(self):
+        selected = self.CODEX_DEFAULT_MODEL
+        state = self._codex_read_state()
+        if state.get("restore"):
+            if state["status"] != "active":
+                raise FileExistsError("Codex model switching was interrupted; run codex-logout to restore")
+            state["selected_model"] = self._load_config()["agents"]["defaults"]["model"]["primary"]
+            return self._codex_result(state, preview=self.runner.dry_run)
+
+        original = self.config_path.read_bytes()
+        original_mode = stat.S_IMODE(self.config_path.stat().st_mode)
+        config = self._load_config()
+        models = self._codex_model_definitions()
+        candidate, restore, hybrid = self._codex_model_candidate(config, models, selected)
+        state = {"config_path": str(self.config_path), "status": "applying", "restore": restore,
+                 "selected_model": "openai/" + selected, "models": models,
+                 "switched_agents": [agent["id"] for agent in restore["agents"]],
+                 "provider_mode": "mixed_api_and_codex" if hybrid else "codex"}
+        if self.runner.dry_run:
+            return self._codex_result(state, preview=True)
+        self._codex_validate(candidate)
+        if self.config_path.read_bytes() != original:
+            raise RuntimeError("Config changed during Codex model switch; retry")
+        # Persist the original models first, so an interrupted write is recoverable.
+        _private_json(self._codex_state_path(), state)
+        try:
             if self.config_path.read_bytes() != original:
                 raise RuntimeError("Config changed during Codex model switch; retry")
-            # Persist the original models first, so an interrupted write is recoverable.
+            _private_json(self.config_path, candidate)
+            state["status"] = "active"
             _private_json(self._codex_state_path(), state)
-            try:
-                if self.config_path.read_bytes() != original:
-                    raise RuntimeError("Config changed during Codex model switch; retry")
-                _private_json(self.config_path, candidate)
-                state["status"] = "active"
-                _private_json(self._codex_state_path(), state)
-            except Exception:
-                encoded = (json.dumps(candidate, ensure_ascii=False, indent=2) + "\n").encode()
-                if self.config_path.read_bytes() == encoded:
-                    _atomic_bytes(self.config_path, original, original_mode)
-                self._codex_state_path().unlink()
-                raise
-            return self._codex_result(state)
+        except Exception:
+            encoded = (json.dumps(candidate, ensure_ascii=False, indent=2) + "\n").encode()
+            if self.config_path.read_bytes() == encoded:
+                _atomic_bytes(self.config_path, original, original_mode)
+            self._codex_state_path().unlink()
+            raise
+        return self._codex_result(state)
 
     def _codex_model_candidate(self, config, models, selected):
         candidate = deepcopy(config)
@@ -162,60 +166,63 @@ class CodexManagementMixin:
                    "default_fields": self._codex_switch_chat_fields(defaults, "openai/" + selected)}
         return candidate, restore, hybrid
 
-    def codex_logout(self):
+    def _codex_restore_models(self):
         with self._refresh_lock(self.config_path.parent / "agent-manage"):
-            state = self._codex_read_state()
-            result = {"ok": True, "scope": "environment", "status": "restored", "mode": "models_only",
-                      "skipped": self.runner.dry_run, "models_restored": False,
-                      "restart_required": False, "gateway_restarted": False, "activation_verified": False}
-            if not state or self.runner.dry_run:
-                return result
-            original = self.config_path.read_bytes()
-            config = self._load_config()
-            restore = state["restore"]
-            providers = config.setdefault("models", {}).setdefault("providers", {})
-            if restore["provider_present"]:
-                providers["openai"] = restore["provider"]
-            else:
-                providers.pop("openai", None)
-            defaults = config.setdefault("agents", {}).setdefault("defaults", {})
-            if restore["allowlist"] is None:
-                defaults.pop("models", None)
-            else:
-                defaults["models"] = restore["allowlist"]
-            self._codex_restore_chat_fields(defaults, restore["default_fields"])
-            for saved in restore["agents"]:
-                agent = next((item for item in config["agents"].get("list", []) if item.get("id") == saved["id"]), None)
-                if agent is not None:
-                    self._codex_restore_chat_fields(agent, saved["chat_fields"])
-                    if saved["models_present"]:
-                        agent["models"] = saved["models"]
-                    else:
-                        agent.pop("models", None)
-            # New agents inherit restored defaults rather than dangling Codex selectors.
-            saved_ids = {saved["id"] for saved in restore["agents"]}
-            codex_refs = set(restore["added_refs"])
-            for agent in config["agents"].get("list", []):
-                if agent.get("id") in saved_ids:
-                    continue
-                for field in self._codex_switch_chat_fields(deepcopy(agent), state["selected_model"]):
-                    value = field["value"]
-                    selected = value.get("primary") if isinstance(value, dict) else value
-                    if selected in codex_refs:
-                        self._codex_restore_chat_fields(agent, [{**field, "present": False}])
-                    elif isinstance(value, dict) and isinstance(value.get("fallbacks"), list):
-                        cleaned = {**value, "fallbacks": [ref for ref in value["fallbacks"] if ref not in codex_refs]}
-                        self._codex_restore_chat_fields(agent, [{**field, "value": cleaned}])
-                if "models" in agent:
-                    agent["models"] = {key: value for key, value in agent["models"].items() if key not in codex_refs}
-                    if not agent["models"]:
-                        agent.pop("models")
-            self._codex_validate(config)
-            if self.config_path.read_bytes() != original:
-                raise RuntimeError("Config changed during Codex model restore; retry")
-            state["status"] = "restoring"
-            _private_json(self._codex_state_path(), state)
-            _private_json(self.config_path, config)
-            self._codex_state_path().unlink()
-            result.update(models_restored=True, restored_agents=[agent["id"] for agent in restore["agents"]])
+            return self._codex_restore_models_locked()
+
+    def _codex_restore_models_locked(self):
+        state = self._codex_read_state()
+        result = {"ok": True, "scope": "environment", "status": "restored", "mode": "models_only",
+                  "skipped": self.runner.dry_run, "models_restored": False,
+                  "restart_required": False, "gateway_restarted": False, "activation_verified": False}
+        if not state or self.runner.dry_run:
             return result
+        original = self.config_path.read_bytes()
+        config = self._load_config()
+        restore = state["restore"]
+        providers = config.setdefault("models", {}).setdefault("providers", {})
+        if restore["provider_present"]:
+            providers["openai"] = restore["provider"]
+        else:
+            providers.pop("openai", None)
+        defaults = config.setdefault("agents", {}).setdefault("defaults", {})
+        if restore["allowlist"] is None:
+            defaults.pop("models", None)
+        else:
+            defaults["models"] = restore["allowlist"]
+        self._codex_restore_chat_fields(defaults, restore["default_fields"])
+        for saved in restore["agents"]:
+            agent = next((item for item in config["agents"].get("list", []) if item.get("id") == saved["id"]), None)
+            if agent is not None:
+                self._codex_restore_chat_fields(agent, saved["chat_fields"])
+                if saved["models_present"]:
+                    agent["models"] = saved["models"]
+                else:
+                    agent.pop("models", None)
+        # New agents inherit restored defaults rather than dangling Codex selectors.
+        saved_ids = {saved["id"] for saved in restore["agents"]}
+        codex_refs = set(restore["added_refs"])
+        for agent in config["agents"].get("list", []):
+            if agent.get("id") in saved_ids:
+                continue
+            for field in self._codex_switch_chat_fields(deepcopy(agent), state["selected_model"]):
+                value = field["value"]
+                selected = value.get("primary") if isinstance(value, dict) else value
+                if selected in codex_refs:
+                    self._codex_restore_chat_fields(agent, [{**field, "present": False}])
+                elif isinstance(value, dict) and isinstance(value.get("fallbacks"), list):
+                    cleaned = {**value, "fallbacks": [ref for ref in value["fallbacks"] if ref not in codex_refs]}
+                    self._codex_restore_chat_fields(agent, [{**field, "value": cleaned}])
+            if "models" in agent:
+                agent["models"] = {key: value for key, value in agent["models"].items() if key not in codex_refs}
+                if not agent["models"]:
+                    agent.pop("models")
+        self._codex_validate(config)
+        if self.config_path.read_bytes() != original:
+            raise RuntimeError("Config changed during Codex model restore; retry")
+        state["status"] = "restoring"
+        _private_json(self._codex_state_path(), state)
+        _private_json(self.config_path, config)
+        self._codex_state_path().unlink()
+        result.update(models_restored=True, restored_agents=[agent["id"] for agent in restore["agents"]])
+        return result
