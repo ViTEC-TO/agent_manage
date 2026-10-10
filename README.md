@@ -228,7 +228,7 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 ## codex-login / codex-logout / codex-status
 
 这三个命令管理当前整个 OpenClaw 环境的 Codex 登录、模型切换和登录状态，
-适配服务器旧版 OpenClaw `2026.7.1-1` / `2026.7.1-2`，不适配本机新版。
+适配服务器旧版 OpenClaw `2026.7.1` / `2026.7.1-1` / `2026.7.1-2`，不适配本机新版。
 不需要 `--agent`、`--model`、`--login-id`、API key 或 OAuth 回调地址。
 
 ```bash

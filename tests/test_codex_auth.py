@@ -257,7 +257,6 @@ class GlobalCodexTest(unittest.TestCase):
         package = self.path.parent / "fake-openclaw"
         package.mkdir()
         metadata = package / "package.json"
-        metadata.write_text(json.dumps({"name": "openclaw", "version": "2026.7.1-1"}))
         binary = package / "openclaw.mjs"
         binary.write_text("#!/usr/bin/env node\n")
         binary.chmod(0o755)
@@ -265,10 +264,18 @@ class GlobalCodexTest(unittest.TestCase):
         link.symlink_to(binary)
         self.manager.runner = LocalRunner(str(link))
         self.manager.bin = str(link)
-        self.assertEqual(self.manager._codex_bridge_input("inspect")["package"], str(package))
-        metadata.write_text(json.dumps({"name": "openclaw", "version": "2026.9.2"}))
-        with self.assertRaisesRegex(ValueError, "server OpenClaw"):
-            self.manager._codex_bridge_input("inspect")
+        for version in ("2026.7.1", "2026.7.1-1", "2026.7.1-2"):
+            with self.subTest(version=version):
+                metadata.write_text(json.dumps({"name": "openclaw", "version": version}))
+                self.assertEqual(self.manager._codex_bridge_input("inspect")["package"], str(package))
+        for name, version in (("openclaw", "2026.9.2"), ("other-package", "2026.7.1")):
+            with self.subTest(name=name, version=version):
+                metadata.write_text(json.dumps({"name": name, "version": version}))
+                with self.assertRaisesRegex(ValueError, "server OpenClaw") as error:
+                    self.manager._codex_bridge_input("inspect")
+                self.assertIn(repr(name), str(error.exception))
+                self.assertIn(repr(version), str(error.exception))
+                self.assertIn(str(package), str(error.exception))
 
 
 @unittest.skipUnless(os.environ.get("AGENT_MANAGE_TEST_OPENCLAW_BIN"), "Set pinned server OpenClaw for native auth tests")

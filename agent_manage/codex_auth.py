@@ -52,8 +52,12 @@ class CodexAuthMixin:
         if not metadata.is_file():
             raise ValueError("Cannot locate the server OpenClaw package from its executable")
         info = json.loads(metadata.read_text())
-        if info.get("name") != "openclaw" or info.get("version") not in {"2026.7.1-1", "2026.7.1-2"}:
-            raise ValueError("Codex global authentication currently supports server OpenClaw 2026.7.1-1 / 2026.7.1-2 only")
+        if info.get("name") != "openclaw" or info.get("version") not in {"2026.7.1", "2026.7.1-1", "2026.7.1-2"}:
+            raise ValueError(
+                "Codex global authentication currently supports server OpenClaw "
+                "2026.7.1 / 2026.7.1-1 / 2026.7.1-2 only; "
+                f"detected name={info.get('name')!r}, version={info.get('version')!r}, package={package}"
+            )
         root = self.config_path.parent
         config = self._load_config()
         agents = self._codex_auth_agents(config)
