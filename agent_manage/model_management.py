@@ -22,6 +22,12 @@ class ModelManagementMixin:
     """Manage model catalogs and the model-related OpenClaw config surface."""
 
     def set_model(self, request: SetModelRequest) -> Dict[str, object]:
+        if self._codex_models_active():
+            steps = self._codex_set_chat_model(request.model_ref)
+            restart_result = self._restart_gateway_service()
+            return {"ok": True, "model_ref": request.model_ref, "steps": steps,
+                    "gateway_restart": self._build_step_payload("gateway.restart", restart_result)}
+
         supported_model_refs = self._supported_model_refs_from_config()
         if request.model_ref not in supported_model_refs:
             allowed = ", ".join(sorted(supported_model_refs))
@@ -76,6 +82,14 @@ class ModelManagementMixin:
 
     def get_supported_models(self) -> Dict[str, object]:
         config = self._load_config()
+        if self._codex_models_active():
+            state = self._codex_read_state()
+            models = [{"id": row["id"], "provider": "openai", "model_ref": "openai/" + row["id"],
+                       "definition": row} for row in state["models"]]
+            return {"ok": True, "provider": "openai", "providers": ["openai"],
+                    "current_model": self._configured_default_model_from_config(config),
+                    "supported_model_refs": [row["model_ref"] for row in models], "models": models,
+                    "config_path": str(self.config_path), "config_exists": self.config_path.exists()}
         defaults = config.get("agents", {}).get("defaults", {})
         current_model = (
             defaults.get("model", {}).get("primary")
@@ -96,6 +110,8 @@ class ModelManagementMixin:
         }
 
     def update_model_catalog(self) -> Dict[str, object]:
+        if self._codex_models_active():
+            return {"ok": True, "skipped": True, "reason": "codex_login_active", "restart_required": False}
         config = self._load_config()
         current_model = self._configured_default_model_from_config(config)
         model_key = self._configured_model_api_key_from_config(config)
@@ -145,6 +161,8 @@ class ModelManagementMixin:
         ai_shop: Optional[str] = None,
         official_image_model_available: bool = False,
     ) -> Dict[str, object]:
+        if self._codex_models_active():
+            raise FileExistsError("Log out of Codex before reconfiguring model providers")
         config_path = self.config_path
         resolved_base_url = self._model_base_url_for_ai_shop(
             base_url or self.MODEL_GATEWAYS[self.DEFAULT_MODEL_ENV]["base_url"],

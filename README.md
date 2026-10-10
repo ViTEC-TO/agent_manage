@@ -225,6 +225,47 @@ python3 scripts/agentctl.py refresh-agent --agent demo --template-only \
 - 此版只接管单 agent 的文件升级，不升级 OpenClaw 程序、不自动安装程序依赖或执行模板脚本。
   `requiredLibraries` 中必需依赖须能通过 `bin` 检查已存在；团队模板需拆分单 agent 包分别刷新。
 
+## codex-login / codex-logout
+
+这两个命令只管理模型配置。实际 ChatGPT/Codex 授权登录、凭据保存和 Token 刷新由
+OpenClaw 自身处理，agent_manage 不调用登录接口、不查询账号目录、不读写认证存储。
+配置格式适配服务器旧版 OpenClaw `2026.7.1-1` / `2026.7.1-2`。
+一次切换作用于当前整个环境，全部 agent 的聊天模型、已有 utility / heartbeat / subagent
+模型选择一起切换，不需要指定 agent。
+
+```bash
+# 安装新的 Codex 模型配置，备份原模型，统一切换默认聊天模型
+agent-manage codex-login
+
+# 使用已有切模型命令选择其他聊天模型
+agent-manage set-model --model openai/gpt-6-luna
+
+# 恢复切换前的模型配置；不退出 OpenClaw 的账号登录
+agent-manage codex-logout
+```
+
+- 当前写入 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`，默认选择 `gpt-6.1-sol`。
+  模型 ID 依据 [OpenAI 官方 Codex 模型文档](https://learn.chatgpt.com/docs/models)，
+  核对日期为 2026-10-10。列表是本地配置，不代表登录账号拥有全部模型权限。
+  `codex-login` 不带模型参数；后续用 `set-model --model openai/<model ID>` 切换。
+- 普通 Codex provider 配置为 `openai`、`baseUrl: https://chatgpt.com/backend-api/codex`、
+  `api: openai-chatgpt-responses`、`auth: oauth`、`agentRuntime: {id: openclaw}`。
+  若原 `openai` provider 同时承载图片/音频 API，则保留其 API key 与原默认传输，
+  在新增的 Codex 模型条目上分别设置上述 `baseUrl`、`api` 和 `agentRuntime`，由 OAuth profile
+  供聊天使用。`provider_mode: mixed_api_and_codex` 表示此种混合配置，避免把原图片请求误发到 Codex。
+- 图片、音频保留原配置。这个命令不验证账号媒体权限，不把原媒体 API 自动改成 Codex。
+- 成功返回 `status: configured`、`mode: models_only`、`model`、`models`、
+  `supported_model_refs`、`switched_agents`，不再有设备码或 `login_id`。
+  `models` 命令此时返回配置的 Codex 聊天模型；`update-model` 和 `refresh-agent` 的模型部分
+  返回 `skipped: true, reason: codex_login_active`，模板刷新继续，防止把 Codex 模式覆盖回 Dola。
+  `configure-instance` 等重新配置 provider 的操作需要先登出。
+- 模型恢复记录保存在 `<config 目录>/agent-manage/codex-login.json`，权限 `0600`，
+  上级目录权限 `0700`。重复调用不会覆盖原模型备份，也不会重置已通过 `set-model` 选择的模型。
+  恢复时只修改模型相关字段，保留之后新增的渠道、认证等其他设置。
+- `codex-login` / `codex-logout` 默认不重启、不探测 Gateway，不清空已有会话。
+  `restart_required: false`、`activation_verified: false`；成功只表示模型配置写入完成，
+  不表示已经登录或验证模型调用。`--dry-run` 不写入配置或恢复记录。
+
 ## create-instance
 
 ### 行为说明
@@ -1320,8 +1361,9 @@ cd ~/data/agent_manage && python3 scripts/agentctl.py agents-list
 
 - 只允许切换到当前 `~/.openclaw/openclaw.json` 已保存的受支持模型
 - 传参必须写完整模型引用，不接受简写
-- 直接执行 `openclaw models set <model_ref>`
+- 普通模式直接执行 `openclaw models set <model_ref>`
 - 用于切换当前默认模型
+- Codex 模式下只允许选择已安装的 Codex 模型，写入当前环境配置，并同步全部 agent 的聊天、utility / heartbeat / subagent 模型；原模型恢复记录保留
 - 切换成功后会通过 `systemctl --user stop/start openclaw-gateway.service` 重启 gateway，并轮询进程退出和端口监听
 
 ### 远程执行

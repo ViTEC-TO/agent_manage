@@ -91,6 +91,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     refresh.add_argument("--replace-modified", action="store_true", help="back up and replace conflicting template files; memory is always preserved")
     refresh.add_argument("--restart", action="store_true", help="restart the environment gateway and require a successful RPC health check")
 
+    subparsers.add_parser("codex-login")
+    subparsers.add_parser("codex-logout")
+
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
     add_tg_bot_token = add_tg_bot.add_mutually_exclusive_group(required=True)
@@ -235,6 +238,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
             )
             print_json(_success_response(result, client))
+            return 0
+        if args.command == "codex-login":
+            result = client.codex_login()
+            print_json(build_success_response(result))
+            return 0
+        if args.command == "codex-logout":
+            print_json(build_success_response(client.codex_logout()))
             return 0
         if args.command == "refresh-agent":
             result = client.refresh_agent(RefreshAgentRequest(
