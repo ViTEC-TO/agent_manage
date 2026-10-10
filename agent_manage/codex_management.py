@@ -106,11 +106,13 @@ class CodexManagementMixin(CodexAuthMixin):
             if state["status"] != "active":
                 raise FileExistsError("Codex model switching was interrupted; run codex-logout to restore")
             state["selected_model"] = self._load_config()["agents"]["defaults"]["model"]["primary"]
-            if state["restore"].get("media"):
+            if state["restore"].get("media") and state["restore"].get("catalog"):
                 return self._codex_result(state, preview=self.runner.dry_run)
             # Upgrade an already active login without replacing its original restore record.
             candidate = deepcopy(config)
-            state["restore"]["media"] = self._codex_configure_media(candidate, state["restore"].get("provider"))
+            if not state["restore"].get("media"):
+                state["restore"]["media"] = self._codex_configure_media(candidate, state["restore"].get("provider"))
+            self._codex_clean_catalog(candidate, state["restore"], state["models"])
             state["status"] = "applying"
         else:
             models = self._codex_model_definitions()
@@ -151,7 +153,7 @@ class CodexManagementMixin(CodexAuthMixin):
         hybrid = bool(old_provider and old_provider.get("apiKey") is not None and old_provider.get("api") != self.CODEX_API)
         if hybrid:
             provider = deepcopy(old_provider)
-            provider.update(auth="oauth", models=[row for row in provider.get("models", []) if "openai/" + row["id"] not in refs] + models)
+            provider.update(auth="oauth", models=models)
         else:
             if old_provider and old_provider.get("api") != self.CODEX_API:
                 raise FileExistsError("Existing OpenAI API provider cannot be safely switched while preserving media routes")
@@ -162,10 +164,6 @@ class CodexManagementMixin(CodexAuthMixin):
         defaults = candidate.setdefault("agents", {}).setdefault("defaults", {})
         old_allowlist = deepcopy(defaults.get("models"))
         defaults["models"] = {ref: {} for ref in sorted(refs)}
-        media_refs = self._configured_media_model_refs(config)
-        for ref, value in (old_allowlist or {}).items():
-            if ref in media_refs:
-                defaults["models"][ref] = value
         changed_agents = []
         for agent in candidate["agents"].get("list", []):
             changed_agents.append({"id": agent["id"], "models_present": "models" in agent,
@@ -177,7 +175,44 @@ class CodexManagementMixin(CodexAuthMixin):
                    "allowlist": old_allowlist, "added_refs": sorted(refs), "agents": changed_agents,
                    "default_fields": self._codex_switch_chat_fields(defaults, "openai/" + selected)}
         restore["media"] = self._codex_configure_media(candidate, old_provider)
+        self._codex_clean_catalog(candidate, restore, models)
         return candidate, restore, hybrid
+
+    def _codex_clean_catalog(self, config, restore, models):
+        catalog = config["models"]
+        providers = catalog["providers"]
+        # Non-OpenAI providers were untouched by previous login versions. Rebuild
+        # the complete original catalog with the first login's OpenAI backup.
+        original_providers = deepcopy(providers)
+        if restore["provider_present"]:
+            original_providers["openai"] = deepcopy(restore["provider"])
+        else:
+            original_providers.pop("openai", None)
+        restore["catalog"] = {"providers": original_providers,
+                              "mode_present": "mode" in catalog, "mode": catalog.get("mode")}
+        media = config.get("tools", {}).get("media", {})
+        audio = media.get("audio", {})
+        entries = list(audio.get("models", [])) + [entry for entry in media.get("models", [])
+                    if not entry.get("capabilities") or "audio" in entry["capabilities"]]
+        audio_providers = {entry.get("provider") for entry in entries if entry.get("type", "provider") == "provider"}
+        tts_provider = config.get("messages", {}).get("tts", {}).get("provider")
+        if tts_provider:
+            audio_providers.add(tts_provider)
+        openai = providers["openai"]
+        openai["models"] = deepcopy(models) + [{"id": "gpt-image-2", "name": "GPT Image 2", "api": self.CODEX_API,
+                                               "baseUrl": self.CODEX_BASE_URL, "agentRuntime": {"id": "openclaw"},
+                                               "input": ["text", "image"]}]
+        # Retain only explicitly used audio connections, without chat/image catalogs.
+        catalog["providers"] = {provider: {**deepcopy(value), "models": []}
+                                for provider, value in providers.items()
+                                if provider != "openai" and provider in audio_providers}
+        catalog["providers"]["openai"] = openai
+        catalog["mode"] = "replace"
+        restore["catalog"]["applied_providers"] = list(catalog["providers"])
+        config["agents"]["defaults"]["models"] = {"openai/" + row["id"]: {} for row in openai["models"]}
+        for agent in config["agents"].get("list", []):
+            if "models" in agent:
+                agent["models"] = {"openai/" + row["id"]: {} for row in models}
 
     def _codex_configure_media(self, config, old_provider):
         defaults = config["agents"]["defaults"]
@@ -194,11 +229,6 @@ class CodexManagementMixin(CodexAuthMixin):
         # The image plugin chooses subscription transport from the provider defaults,
         # even when a retained API key is also needed by the old audio plugin.
         provider.update(baseUrl=self.CODEX_BASE_URL, api=self.CODEX_API, auth="oauth", agentRuntime={"id": "openclaw"})
-        if old_provider and old_provider.get("api") != self.CODEX_API:
-            for model in provider["models"]:
-                if model["id"] not in {model_id for model_id, _ in self.CODEX_MODELS}:
-                    model.setdefault("api", old_provider.get("api", "openai-completions"))
-                    model.setdefault("baseUrl", old_provider.get("baseUrl", "https://api.openai.com/v1"))
         # Old server auth rejects OAuth for audio/transcriptions. Keep existing
         # explicit audio routes and pin OpenAI entries to their original endpoint.
         if old_provider and old_provider.get("api") != self.CODEX_API:
@@ -260,7 +290,16 @@ class CodexManagementMixin(CodexAuthMixin):
         config = self._load_config()
         restore = state["restore"]
         providers = config.setdefault("models", {}).setdefault("providers", {})
-        if restore["provider_present"]:
+        if restore.get("catalog"):
+            catalog = restore["catalog"]
+            additions = {provider: value for provider, value in providers.items()
+                         if provider not in catalog["providers"] and provider not in catalog["applied_providers"]}
+            config["models"]["providers"] = {**additions, **deepcopy(catalog["providers"])}
+            if catalog["mode_present"]:
+                config["models"]["mode"] = catalog["mode"]
+            else:
+                config["models"].pop("mode", None)
+        elif restore["provider_present"]:
             providers["openai"] = restore["provider"]
         else:
             providers.pop("openai", None)

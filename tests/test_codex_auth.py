@@ -346,6 +346,9 @@ for(const dir of process.argv.slice(2)){
         self.assertTrue(all(agent["shared_auth"] for agent in status["agents"]))
         self.assertNotIn("test-existing-access", json.dumps(status))
         self.assertNotIn("test-existing-refresh", json.dumps(status))
+        active_config = json.loads(self.path.read_text())
+        self.assertEqual(set(active_config["models"]["providers"]), {"openai"})
+        self.assertEqual(active_config["models"]["mode"], "replace")
         # Exercise the pinned image plugin with a mocked service response:
         # a retained media API key must not take precedence over global OAuth.
         routing = self.path.parent / "check-media-routing.mjs"
@@ -392,6 +395,9 @@ if(audio.text!=='mock transcript'||imageCalls!==1||audioCalls!==1)throw new Erro
         self.path.write_text(json.dumps(config))
         self.assertTrue(self.manager.codex_status()["logged_in"])
         self.assertEqual(self.manager.codex_logout()["credentials_removed"], 1)
+        restored = json.loads(self.path.read_text())
+        self.assertEqual(restored["models"], self.fixture.original["models"])
+        self.assertEqual(restored["agents"]["defaults"], self.fixture.original["agents"]["defaults"])
         self.assertFalse(self.manager.codex_status()["logged_in"])
         # Inspect native raw local stores via the same pinned public SDK, without external auth sync.
         payload = self.manager._codex_bridge_input("inspect")
