@@ -1,5 +1,20 @@
 # Agent Manage
 
+## Chat 多段历史（OpenClaw 2026.7.x）
+
+新增只读命令，可读取同一逻辑线程重置前的物理段，支持双向分页、完整消息补读及图片/音频附件分块读取：
+
+```bash
+agent-manage sessions-segments-history \
+  --session-key 'agent:example:dashboard:thread-key' \
+  --session-id '<物理段 ID>' --edge end --limit 30
+```
+
+后续分页传 `--cursor`，不要同时传 `--edge`。大消息通过
+`sessions-segments-message-get` 补读，附件通过 `sessions-segments-media-get` 读取。
+完整字段、分块拼接规则、错误码和 WSS 方法映射见 [Chat 多段历史对接](SEGMENT_HISTORY_API.md)。
+外层保持现有 AgentManager JSON 协议；分段索引继续使用 OpenClaw `sessions.usage` 的 family 信息。
+
 ## Prebuilt container image
 
 Template images split immutable Agent registration from order-specific runtime configuration:
