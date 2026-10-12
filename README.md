@@ -12,6 +12,8 @@ agent-manage sessions-segments-history \
 
 后续分页传 `--cursor`，不要同时传 `--edge`。大消息通过
 `sessions-segments-message-get` 补读，附件通过 `sessions-segments-media-get` 读取。
+默认精简工具操作：保留名称、命令短预览和明确记录的成功/失败状态，省略完整参数、代码和结果输出；思考、普通正文、图片保留。前端展示 `summary` / `toolSummary`，不补取省略的工具详情。原完整模式可显式传 `--view full`。
+历史、消息、附件三个读取命令均直接用 Python 读取本地文件，保留线程归属、路径和分页快照检查，不启动 Node 或加载 OpenClaw SDK。
 完整字段、分块拼接规则、错误码和 WSS 方法映射见 [Chat 多段历史对接](SEGMENT_HISTORY_API.md)。
 外层保持现有 AgentManager JSON 协议；分段索引继续使用 OpenClaw `sessions.usage` 的 family 信息。
 

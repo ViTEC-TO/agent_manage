@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import json
 import os
@@ -13,16 +14,43 @@ from agent_manage.cli import main
 from agent_manage.local import LocalRunner
 from agent_manage.orchestrator import InstanceManagerV2
 from agent_manage.response import ProtocolError, build_error_response, build_success_response, print_json
+from agent_manage.segment_reader import read_segment, select_rows
 
 
 class SegmentCliTest(unittest.TestCase):
+    def test_session_key_alias_is_explicit_for_all_segment_commands(self):
+        cases = [
+            ("sessions-segments-history", "segment_history", ["--edge", "end", "--limit", "1"],
+             {"edge": "end", "limit": 1, "cursor": None, "view": None}, ()),
+            ("sessions-segments-message-get", "segment_message_get", ["--message-id", "entry", "--ref", "snapshot"],
+             {"ref": "snapshot", "cursor": None}, ("entry",)),
+            ("sessions-segments-media-get", "segment_media_get", ["--ref", "media"],
+             {"cursor": None}, ("media",)),
+        ]
+        # Disabling automatic abbreviation proves the alias is declared explicitly.
+        from agent_manage.response import JsonArgumentParser
+        original_init = JsonArgumentParser.__init__
+
+        def no_abbreviation(parser, *args, **kwargs):
+            kwargs["allow_abbrev"] = False
+            original_init(parser, *args, **kwargs)
+
+        with patch.object(JsonArgumentParser, "__init__", no_abbreviation):
+            for option in ("--session-key", "--session-k"):
+                for command, method, extra, expected, positional in cases:
+                    with self.subTest(command=command, option=option):
+                        with patch.object(InstanceManagerV2, method, return_value={}) as call:
+                            with redirect_stdout(io.StringIO()):
+                                self.assertEqual(main([command, option, "agent:main:thread:x", "--session-id", "old", *extra]), 0)
+                            call.assert_called_once_with("agent:main:thread:x", "old", *positional, **expected)
+
     def test_arguments_and_response(self):
         with patch.object(InstanceManagerV2, "segment_history", return_value={"messages": []}) as call:
             output = io.StringIO()
             with redirect_stdout(output):
                 self.assertEqual(main(["sessions-segments-history", "--session-key", "agent:main:thread:x",
                                        "--session-id", "old", "--edge", "start", "--limit", "4"]), 0)
-            call.assert_called_once_with("agent:main:thread:x", "old", edge="start", limit=4, cursor=None)
+            call.assert_called_once_with("agent:main:thread:x", "old", edge="start", limit=4, cursor=None, view=None)
             self.assertEqual(json.loads(output.getvalue())["result"], {"messages": []})
 
     def test_domain_error_code_survives_cli(self):
@@ -37,7 +65,7 @@ class SegmentCliTest(unittest.TestCase):
         with patch.object(InstanceManagerV2, "segment_history", return_value={}) as call:
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["sessions-segments-history", *shared, "--cursor", "older", "--limit", "4"]), 0)
-            call.assert_called_once_with("agent:main:thread:x", "old", edge=None, limit=4, cursor="older")
+            call.assert_called_once_with("agent:main:thread:x", "old", edge=None, limit=4, cursor="older", view=None)
         with patch.object(InstanceManagerV2, "segment_message_get", return_value={}) as call:
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["sessions-segments-message-get", *shared, "--message-id", "entry", "--ref", "snapshot"]), 0)
@@ -59,6 +87,13 @@ class SegmentCliTest(unittest.TestCase):
             call.assert_not_called()
             self.assertIn("ref or cursor", json.loads(output.getvalue())["message"])
 
+    def test_compact_view_forwarding(self):
+        with patch.object(InstanceManagerV2, "segment_history", return_value={}) as call:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["sessions-segments-history", "--session-k", "agent:main:main",
+                                       "--session-id", "old", "--view", "compact"]), 0)
+            call.assert_called_once_with("agent:main:main", "old", edge=None, limit=30, cursor=None, view="compact")
+
     def test_validation_before_native_process(self):
         manager = InstanceManagerV2(LocalRunner())
         for options in ({"limit": 0}, {"limit": 101}, {"limit": True}, {"edge": "start", "cursor": "abc"}):
@@ -67,6 +102,76 @@ class SegmentCliTest(unittest.TestCase):
         for session_id in ("../secret", "", "a/b"):
             with self.assertRaises(ValueError):
                 manager.segment_history("agent:main:main", session_id)
+
+
+class DirectSegmentReaderTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="segment-direct-test-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.sessions = self.root / "agents/main/sessions"
+        self.sessions.mkdir(parents=True)
+        self.key = "agent:main:dashboard:case-Sensitive"
+        self.request = {"action": "history", "root": str(self.root), "config": {},
+                        "sessionKey": self.key, "sessionId": "physical", "edge": "end", "limit": 30}
+        self.index = self.sessions / "sessions.json"
+        self.index.write_text(json.dumps({self.key: {"sessionId": "physical", "usageFamilySessionIds": []}}))
+        self.file = self.sessions / "physical.jsonl"
+        self.file.write_text(json.dumps({"type": "message", "id": "tool", "parentId": None,
+            "message": {"role": "toolResult", "toolName": "read", "isError": False,
+                        "content": [{"type": "text", "text": "source code " * 10000}]}}) + "\n")
+
+    def test_default_omits_code_and_does_not_fetch_original(self):
+        with patch("subprocess.run", side_effect=AssertionError("No child processes")):
+            page = read_segment(self.request, os.environ)
+        self.assertEqual(page["view"], "compact")
+        tool = page["messages"][0]
+        self.assertEqual(tool["content"], [])
+        self.assertEqual(tool["toolSummary"], {"name": "read", "status": "success"})
+        self.assertNotIn("fullMessageRef", tool)
+        self.assertLess(len(json.dumps(page)), 1000)
+        full = read_segment({**self.request, "view": "full"}, os.environ)
+        self.assertEqual(full["messages"][0]["content"][0]["text"], "source code " * 10000)
+
+    def test_index_and_membership_fail_without_falling_back(self):
+        for index, code in (({}, "FORBIDDEN"), ({self.key.lower(): {"sessionId": "physical"}}, "FORBIDDEN"),
+                            ({self.key: {"sessionId": "another", "usageFamilySessionIds": []}}, "FORBIDDEN")):
+            self.index.write_text(json.dumps(index))
+            with self.assertRaises(ProtocolError) as error:
+                read_segment(self.request, os.environ)
+            self.assertEqual(error.exception.code, code)
+        self.index.write_text("not-json")
+        with self.assertRaises(ProtocolError) as error:
+            read_segment(self.request, os.environ)
+        self.assertEqual(error.exception.code, "SEGMENT_READ_FAILED")
+
+    def test_long_thinking_chunk_does_not_restore_omitted_tool_arguments(self):
+        thought = "Stored thinking " * 30000
+        self.file.write_text(json.dumps({"type": "message", "id": "assistant", "parentId": None,
+            "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": thought},
+            {"type": "toolCall", "id": "call", "name": "exec", "arguments": {"command": "echo ready", "code": "hidden original code" * 20000}}]}}) + "\n")
+        page = read_segment(self.request, os.environ)
+        ref = page["messages"][0]["fullMessageRef"]["params"]["ref"]
+        request = {**self.request, "action": "message", "messageId": "assistant", "ref": ref}
+        part = read_segment(request, os.environ)
+        data = b""
+        while True:
+            self.assertEqual(part["view"], "compact")
+            data += base64.b64decode(part["data"])
+            if not part["nextCursor"]:
+                break
+            part = read_segment({**request, "cursor": part["nextCursor"]}, os.environ)
+        message = json.loads(data)
+        self.assertEqual(message["content"][0]["thinking"], thought)
+        self.assertEqual(message["content"][1]["arguments"], {})
+        self.assertNotIn("hidden original code", data.decode())
+
+    def test_empty_message_and_zero_timestamp_are_retained(self):
+        self.file.write_text(json.dumps({"type": "message", "id": "empty", "parentId": None, "timestamp": 0, "message": {}}) + "\n")
+        page = read_segment(self.request, os.environ)
+        self.assertEqual(page["messages"][0]["id"], "empty")
+        self.assertEqual(page["messages"][0]["timestamp"], 0)
+        self.assertEqual(page["segment"]["startedAt"], 0)
 
 
 @unittest.skipUnless(os.environ.get("AGENT_MANAGE_TEST_OPENCLAW_BIN"), "Set July OpenClaw for native history tests")
@@ -117,6 +222,7 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
             stream.write(json.dumps(record) + "\n")
 
     def history(self, index=0, **options):
+        options.setdefault("view", "full")
         return self.manager.segment_history(self.key, self.ids[index], **options)
 
     def test_three_segments_bidirectional_full_text_and_read_only(self):
@@ -181,6 +287,95 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
         for ref in message["mediaRefs"]:
             result = self.manager.segment_media_get(self.key, self.ids[0], ref["params"]["ref"])
             self.assertEqual(base64.b64decode(result["data"]), image.read_bytes())
+
+    def test_same_image_inline_text_and_metadata_have_one_identity(self):
+        image = self.workspace / "same.png"
+        image.write_bytes(b"same-image")
+        encoded = base64.b64encode(image.read_bytes()).decode()
+        record = self.record("duplicate", "assistant", "MEDIA:" + str(image), "s0-6")
+        record["message"]["content"] += [
+            {"type": "image", "mimeType": "image/png", "data": encoded},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": encoded}},
+        ]
+        record["message"]["MediaPath"] = str(image)
+        record["message"]["media"] = [{"path": "same.png"}, {"url": image.as_uri()}]
+        self.append(record)
+        message = self.history(limit=1)["messages"][0]
+        self.assertEqual(len(message["mediaRefs"]), 1)
+        expected_id = "sha256:" + hashlib.sha256(image.read_bytes()).hexdigest()
+        self.assertEqual(message["mediaRefs"][0]["mediaId"], expected_id)
+        self.assertEqual(message["content"][1]["mediaRef"]["mediaId"], expected_id)
+        self.assertEqual(message["content"][2]["source"]["mediaRef"]["mediaId"], expected_id)
+        params = message["mediaRefs"][0]["params"]
+        media = self.manager.segment_media_get(self.key, self.ids[0], params["ref"])
+        self.assertEqual(media["sha256"], expected_id.removeprefix("sha256:"))
+        self.assertEqual(base64.b64decode(media["data"]), image.read_bytes())
+
+    def test_different_images_and_thumbnail_remain_separate(self):
+        record = self.record("distinct", "assistant", "Images", "s0-6")
+        contents = [b"original-image", b"thumbnail-image", b"different-image"]
+        record["message"]["content"] += [{"type": "image", "mimeType": "image/png",
+            "data": base64.b64encode(value).decode()} for value in contents]
+        self.append(record)
+        refs = self.history(limit=1)["messages"][0]["mediaRefs"]
+        self.assertEqual([ref["mediaId"] for ref in refs], ["sha256:" + hashlib.sha256(value).hexdigest() for value in contents])
+
+    def test_unreadable_media_retains_references_without_identity(self):
+        image = self.workspace / "good.png"
+        image.write_bytes(b"same-bytes")
+        outside = self.root / "outside.png"
+        outside.write_bytes(image.read_bytes())
+        link = self.workspace / "link.png"
+        link.symlink_to(image)
+        paths = [image, self.workspace / "missing.png", self.workspace / "other-missing.png", outside, link]
+        record = self.record("unreadable", "assistant", "Keep this message", "s0-6")
+        record["message"]["media"] = [{"path": str(file)} for file in paths]
+        record["message"]["content"].append({"type": "image", "data": "not-valid-base64!"})
+        self.append(record)
+        message = self.history(limit=1)["messages"][0]
+        self.assertEqual(message["content"][0]["text"], "Keep this message")
+        refs = message["mediaRefs"]
+        self.assertEqual(len(refs), 6)
+        # Inline invalid data is visited first; only the allowed existing file gets an ID.
+        self.assertEqual(sum("mediaId" in ref for ref in refs), 1)
+        for ref, code in zip(refs[2:], ["MEDIA_NOT_FOUND", "MEDIA_NOT_FOUND", "FORBIDDEN", "FORBIDDEN"]):
+            with self.assertRaises(ProtocolError) as error:
+                self.manager.segment_media_get(self.key, self.ids[0], ref["params"]["ref"])
+            self.assertEqual(error.exception.code, code)
+
+    def test_media_identity_detects_change_before_first_download(self):
+        image = self.workspace / "changed.png"
+        image.write_bytes(b"original")
+        self.append(self.record("changed", "assistant", "MEDIA:" + str(image), "s0-6"))
+        ref = self.history(limit=1)["messages"][0]["mediaRefs"][0]
+        image.write_bytes(b"replacement")
+        with self.assertRaises(ProtocolError) as error:
+            self.manager.segment_media_get(self.key, self.ids[0], ref["params"]["ref"])
+        self.assertEqual(error.exception.code, "CURSOR_EXPIRED")
+
+    def test_repeated_local_file_is_hashed_once_per_history_read(self):
+        image = self.workspace / "cached.png"
+        image.write_bytes(b"cached-image" * 20000)
+        for n in range(2):
+            record = self.record(f"cached-{n}", "assistant", "MEDIA:" + str(image), "s0-6" if n == 0 else "cached-0")
+            record["message"]["media"] = [{"path": "cached.png"}, {"url": image.as_uri()}]
+            self.append(record)
+        original_read = os.read
+        read_bytes = 0
+
+        def observed_read(fd, size):
+            nonlocal read_bytes
+            data = original_read(fd, size)
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino) == (image.stat().st_dev, image.stat().st_ino):
+                read_bytes += len(data)
+            return data
+
+        with patch("agent_manage.segment_reader.os.read", side_effect=observed_read):
+            messages = self.history(limit=2)["messages"]
+        self.assertEqual(read_bytes, image.stat().st_size)
+        self.assertEqual([len(message["mediaRefs"]) for message in messages], [1, 1])
+        self.assertEqual(messages[0]["mediaRefs"][0]["mediaId"], messages[1]["mediaRefs"][0]["mediaId"])
 
     def test_media_symlink_missing_and_changed_chunk(self):
         target = self.workspace / "target.png"
@@ -290,6 +485,127 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
         self.assertEqual(page["messages"][0]["id"], "s0-6")
         page = self.history(cursor=page["olderCursor"], limit=1)
         self.assertEqual(page["messages"][0]["id"], "s0-5")
+
+    def test_default_compact_tools_preserves_thinking_text_and_media(self):
+        command = "grep -n 'auth' /app/extensions/openai/speech-providers.ts; " + "generated code " * 50000
+        call = self.record("compact-call", "assistant", "I checked the authentication implementation", "s0-6")
+        call["message"]["content"] += [
+            {"type": "thinking", "thinking": "Saved thinking stays intact"},
+            {"type": "toolCall", "id": "call-compact", "name": "exec", "arguments": {"command": command, "code": "source" * 80000}},
+        ]
+        self.append(call)
+        result = self.record("compact-result", "toolResult", "source code output" * 50000, "compact-call")
+        image_bytes = b"tool-image"
+        result["message"].update(toolName="exec", toolCallId="call-compact", isError=False, details={"stdout": command})
+        result["message"]["content"].append({"type": "image", "mimeType": "image/png", "data": base64.b64encode(image_bytes).decode()})
+        self.append(result)
+        page = self.manager.segment_history(self.key, self.ids[0], limit=2)
+        self.assertEqual(page["view"], "compact")
+        self.assertLess(len(json.dumps(page).encode()), 6000)
+        assistant, tool = page["messages"]
+        self.assertEqual(assistant["content"][0]["text"], call["message"]["content"][0]["text"])
+        self.assertEqual(assistant["content"][1], call["message"]["content"][1])
+        summary = assistant["content"][2]
+        self.assertEqual(summary["arguments"], {})
+        self.assertLessEqual(len(summary["summary"]), 180)
+        self.assertTrue(summary["summary"].startswith("grep"))
+        self.assertEqual(tool["toolSummary"], {"name": "exec", "status": "success"})
+        self.assertEqual(tool["toolCallId"], "call-compact")
+        self.assertNotIn("details", tool)
+        self.assertTrue(all("fullMessageRef" not in message for message in page["messages"]))
+        self.assertEqual(tool["content"][0]["type"], "image")
+        media = self.manager.segment_media_get(self.key, self.ids[0], tool["mediaRefs"][0]["params"]["ref"])
+        self.assertEqual(base64.b64decode(media["data"]), image_bytes)
+
+    def test_compact_cursor_keeps_view_and_advances_over_empty_tool_results(self):
+        for n in range(4):
+            record = self.record(f"tool-{n}", "toolResult", "long output" * 100, "s0-6" if n == 0 else f"tool-{n-1}")
+            record["message"].update(toolName="read", isError=n == 1)
+            self.append(record)
+        page = self.manager.segment_history(self.key, self.ids[0], limit=2)
+        cursor = page["olderCursor"]
+        self.assertEqual([m["id"] for m in page["messages"]], ["tool-2", "tool-3"])
+        page = self.manager.segment_history(self.key, self.ids[0], limit=2, cursor=cursor)
+        self.assertEqual(page["view"], "compact")
+        self.assertEqual([m["id"] for m in page["messages"]], ["tool-0", "tool-1"])
+        self.assertEqual(page["messages"][1]["toolSummary"]["status"], "error")
+        with self.assertRaises(ProtocolError) as error:
+            self.manager.segment_history(self.key, self.ids[0], cursor=cursor, view="full")
+        self.assertEqual(error.exception.code, "CURSOR_EXPIRED")
+
+    def test_reader_starts_no_process_and_uses_topic_and_custom_store(self):
+        self.key = "agent:example:dashboard:thread-key:topic:123"
+        self.sessions = self.root / "custom/example/history"
+        self.sessions.mkdir(parents=True)
+        config = json.loads(self.config.read_text())
+        config["session"] = {"store": str(self.root / "custom/{agentId}/history/sessions.json")}
+        self.config.write_text(json.dumps(config))
+        self.seed()
+        file = self.sessions / (self.ids[0] + "-topic-123.jsonl.reset.2026-10-12T02-00-00.000Z")
+        file.write_bytes(self.paths[0].read_bytes())
+        with patch("subprocess.run", side_effect=AssertionError("reader must not start processes")):
+            page = self.manager.segment_history(self.key, self.ids[0], limit=1)
+        self.assertEqual(page["messages"][0]["id"], "s0-6")
+
+    def test_transcript_index_symlinks_and_header_mismatch_rejected(self):
+        saved = self.paths[0].read_bytes()
+        self.paths[0].unlink()
+        target = self.root / "private-transcript.jsonl"
+        target.write_bytes(saved)
+        self.paths[0].symlink_to(target)
+        with self.assertRaises(ProtocolError) as error:
+            self.history()
+        # Reset discovery ignores symlinks, like July, so it is not an archive.
+        self.assertEqual(error.exception.code, "SEGMENT_NOT_FOUND")
+        self.paths[0].unlink()
+        active = self.sessions / (self.ids[0] + ".jsonl")
+        active.symlink_to(target)
+        with self.assertRaises(ProtocolError) as error:
+            self.history()
+        self.assertEqual(error.exception.code, "FORBIDDEN")
+
+        active.unlink()
+        active.write_bytes(saved.replace(self.ids[0].encode(), self.ids[1].encode(), 1))
+        with self.assertRaises(ProtocolError) as error:
+            self.history()
+        self.assertEqual(error.exception.code, "FORBIDDEN")
+        index = self.sessions / "sessions.json"
+        index_target = self.root / "index.json"
+        index.rename(index_target)
+        index.symlink_to(index_target)
+        with self.assertRaises(ProtocolError) as error:
+            self.history()
+        self.assertEqual(error.exception.code, "FORBIDDEN")
+
+    def test_branch_selection_matches_july_native_algorithm(self):
+        cases = [
+            [{"type": "message", "id": "a"}, {"type": "message", "id": "b"}],
+            [{"type": "message", "id": "a", "parentId": None},
+             {"type": "message", "id": "side", "parentId": "a", "appendMode": "side"},
+             {"type": "message", "id": "b", "parentId": "side"}],
+            [{"type": "message", "id": "a", "parentId": None},
+             {"type": "message", "id": "b", "parentId": "a"},
+             {"type": "message", "id": "c", "parentId": "a"},
+             {"type": "leaf", "id": "leaf", "parentId": "c", "targetId": "b"},
+             {"type": "message", "id": "d", "parentId": "leaf"}],
+            [{"type": "message", "id": "a", "parentId": "missing"},
+             {"type": "message", "id": "b"},
+             {"type": "leaf", "id": "leaf", "parentId": "b", "targetId": None}],
+        ]
+        script = """import fs from 'node:fs';
+const dir=process.argv[1]+'/dist';
+const file=fs.readdirSync(dir).find(n=>n.startsWith('transcript-tree-')&&n.endsWith('.js'));
+const source=fs.readFileSync(dir+'/'+file,'utf8'), mod=await import(dir+'/'+file);
+const scan=mod[source.match(/scanSessionTranscriptTree as (\\w+)/)[1]];
+const select=mod[source.match(/selectSessionTranscriptTreePathNodes as (\\w+)/)[1]];
+const cases=JSON.parse(process.argv[2]);
+console.log(JSON.stringify(cases.map(rows=>{const tree=scan(rows);return (tree.hasExplicitLeafUpdate?select(tree,tree.leafId).map(n=>n.entry):rows).map(r=>r.id)})));
+"""
+        result = subprocess.run(["node", "--input-type=module", "-e", script, str(self.package), json.dumps(cases)],
+                                capture_output=True, text=True, check=True)
+        for entries, expected in zip(cases, json.loads(result.stdout)):
+            rows = [{"meta": entry} for entry in entries]
+            self.assertEqual([row["meta"]["id"] for row in select_rows(rows)], expected)
 
 
 if __name__ == "__main__":
