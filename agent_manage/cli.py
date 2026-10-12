@@ -108,7 +108,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             segment.add_argument("--message-id", required=True)
             segment.add_argument("--ref", help="snapshot reference returned by history")
         else:
-            segment.add_argument("--ref", required=True, help="protected media reference returned by history")
+            segment.add_argument("--ref", help="protected media reference returned by history; optional with --cursor")
 
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)

@@ -32,6 +32,33 @@ class SegmentCliTest(unittest.TestCase):
                 self.assertEqual(main(["sessions-segments-history", "--session-key", "agent:main:thread:x", "--session-id", "old"]), 1)
             self.assertEqual(json.loads(output.getvalue())["error"]["code"], "FORBIDDEN")
 
+    def test_history_cursor_and_message_reference_forwarding(self):
+        shared = ["--session-key", "agent:main:thread:x", "--session-id", "old"]
+        with patch.object(InstanceManagerV2, "segment_history", return_value={}) as call:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["sessions-segments-history", *shared, "--cursor", "older", "--limit", "4"]), 0)
+            call.assert_called_once_with("agent:main:thread:x", "old", edge=None, limit=4, cursor="older")
+        with patch.object(InstanceManagerV2, "segment_message_get", return_value={}) as call:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["sessions-segments-message-get", *shared, "--message-id", "entry", "--ref", "snapshot"]), 0)
+            call.assert_called_once_with("agent:main:thread:x", "old", "entry", ref="snapshot", cursor=None)
+
+    def test_media_cursor_without_original_reference(self):
+        with patch.object(InstanceManagerV2, "segment_media_get", return_value={"nextCursor": None}) as call:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["sessions-segments-media-get", "--session-key", "agent:main:thread:x",
+                                       "--session-id", "old", "--cursor", "chunk"]), 0)
+            call.assert_called_once_with("agent:main:thread:x", "old", None, cursor="chunk")
+
+    def test_media_requires_reference_or_cursor(self):
+        with patch.object(InstanceManagerV2, "_segment_bridge") as call:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["sessions-segments-media-get", "--session-key", "agent:main:thread:x",
+                                       "--session-id", "old"]), 1)
+            call.assert_not_called()
+            self.assertIn("ref or cursor", json.loads(output.getvalue())["message"])
+
     def test_validation_before_native_process(self):
         manager = InstanceManagerV2(LocalRunner())
         for options in ({"limit": 0}, {"limit": 101}, {"limit": True}, {"edge": "start", "cursor": "abc"}):
@@ -138,7 +165,7 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
             part = self.manager.segment_media_get(self.key, self.ids[0], params["ref"])
             content = base64.b64decode(part["data"])
             while part["nextCursor"]:
-                part = self.manager.segment_media_get(self.key, self.ids[0], params["ref"], cursor=part["nextCursor"])
+                part = self.manager.segment_media_get(self.key, self.ids[0], cursor=part["nextCursor"])
                 content += base64.b64decode(part["data"])
             self.assertEqual(content, expected)
 
