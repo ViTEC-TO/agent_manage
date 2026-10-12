@@ -303,6 +303,56 @@ class CodexManagementTest(unittest.TestCase):
         self.assertEqual(self.manager._codex_state_path().read_bytes(), backup)
         self.assertEqual(stat.S_IMODE(self.manager._codex_state_path().stat().st_mode), 0o600)
 
+    def test_existing_login_updates_context_and_preserves_selection_and_restore(self):
+        self.login()
+        state = self.state()
+        restore = state["restore"]
+        for row in state["models"]:
+            row.pop("contextWindow")
+        self.manager._codex_state_path().write_text(json.dumps(state))
+        config = json.loads(self.path.read_text())
+        config["agents"]["defaults"]["model"]["primary"] = "openai/gpt-6-luna"
+        for row in config["models"]["providers"]["openai"]["models"]:
+            row["contextWindow"] = 200000
+        self.path.write_text(json.dumps(config))
+        auth_before = self.auth_file.read_bytes()
+        result = self.login()
+        current = json.loads(self.path.read_text())
+        self.assertEqual(result["model"], "openai/gpt-6-luna")
+        self.assertEqual(self.state()["restore"], restore)
+        self.assertEqual(self.auth_file.read_bytes(), auth_before)
+        for row in current["models"]["providers"]["openai"]["models"]:
+            self.assertEqual(row["contextWindow"], 200000 if row["id"] == "gpt-image-2" else 258000)
+        self.assertTrue(all(row["contextWindow"] == 258000 for row in result["models"]))
+        before = self.path.read_bytes(), self.manager._codex_state_path().read_bytes()
+        self.login()
+        self.assertEqual((self.path.read_bytes(), self.manager._codex_state_path().read_bytes()), before)
+        self.manager._codex_restore_models()
+        self.assertEqual(json.loads(self.path.read_text()), self.original)
+
+    def test_context_upgrade_write_failure_restores_active_login(self):
+        self.login()
+        state = self.state()
+        for row in state["models"]:
+            row.pop("contextWindow")
+        self.manager._codex_state_path().write_text(json.dumps(state))
+        config = json.loads(self.path.read_text())
+        for row in config["models"]["providers"]["openai"]["models"]:
+            row.pop("contextWindow", None)
+        self.path.write_text(json.dumps(config))
+        before = self.path.read_bytes(), self.manager._codex_state_path().read_bytes()
+        from agent_manage.codex_management import _private_json
+
+        def fail_active(path, body):
+            if path == self.manager._codex_state_path() and body.get("status") == "active":
+                raise OSError("state write failed")
+            return _private_json(path, body)
+
+        with patch("agent_manage.codex_management._private_json", side_effect=fail_active):
+            with self.assertRaisesRegex(OSError, "state write failed"):
+                self.login()
+        self.assertEqual((self.path.read_bytes(), self.manager._codex_state_path().read_bytes()), before)
+
     def test_failed_validation_changes_nothing(self):
         original = self.path.read_bytes()
         self.fixture.runner.fail_validate = True

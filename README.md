@@ -277,6 +277,7 @@ Server API 需要允许并转发上述三个命令；本仓库不包含网页或
 - 授权完成后安装 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`，
   默认 `gpt-6.1-sol`。模型 ID 依据 [OpenAI 官方 Codex 模型文档](https://learn.chatgpt.com/docs/models)，
   核对日期为 2026-10-10；配置列表不代表账号拥有全部模型权限。
+  四个聊天模型均显式配置 `contextWindow: 258000`；已登录实例再次执行 `codex-login` 可更新此上限，保留当前选中的模型和最初的登出恢复记录。
   当前全部 agent 的聊天模型、已有 utility / heartbeat / subagent 选择一起切换。
   `set-model` 保持原有行为，只切全局默认模型，agent 独立指定的模型继续保留。
 - 普通 Codex provider 使用 `openai`、`baseUrl: https://chatgpt.com/backend-api/codex`、

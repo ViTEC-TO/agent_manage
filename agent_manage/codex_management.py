@@ -19,6 +19,7 @@ class CodexManagementMixin(CodexAuthMixin):
     # not a claim about the signed-in account's model permissions.
     # https://learn.chatgpt.com/docs/models
     CODEX_DEFAULT_MODEL = "gpt-6.1-sol"
+    CODEX_CONTEXT_WINDOW = 258_000
     CODEX_IMAGE_MODEL = "openai/gpt-image-2"
     CODEX_MODELS = (
         ("gpt-6.1-sol", "GPT-6.1 Sol"),
@@ -71,7 +72,8 @@ class CodexManagementMixin(CodexAuthMixin):
     def _codex_model_definitions(self):
         return [{"id": model_id, "name": name, "api": self.CODEX_API,
                  "baseUrl": self.CODEX_BASE_URL, "agentRuntime": {"id": "openclaw"},
-                 "input": ["text", "image"], "reasoning": True}
+                 "input": ["text", "image"], "reasoning": True,
+                 "contextWindow": self.CODEX_CONTEXT_WINDOW}
                 for model_id, name in self.CODEX_MODELS]
 
     def _codex_validate(self, config):
@@ -106,13 +108,24 @@ class CodexManagementMixin(CodexAuthMixin):
             if state["status"] != "active":
                 raise FileExistsError("Codex model switching was interrupted; run codex-logout to restore")
             state["selected_model"] = self._load_config()["agents"]["defaults"]["model"]["primary"]
-            if state["restore"].get("media") and state["restore"].get("catalog"):
-                return self._codex_result(state, preview=self.runner.dry_run)
-            # Upgrade an already active login without replacing its original restore record.
+            models = deepcopy(state["models"])
+            for model in models:
+                model["contextWindow"] = self.CODEX_CONTEXT_WINDOW
             candidate = deepcopy(config)
-            if not state["restore"].get("media"):
-                state["restore"]["media"] = self._codex_configure_media(candidate, state["restore"].get("provider"))
-            self._codex_clean_catalog(candidate, state["restore"], state["models"])
+            if state["restore"].get("media") and state["restore"].get("catalog"):
+                # Update model metadata without rebuilding the catalog restore backup.
+                refs = {model["id"] for model in models}
+                for model in candidate.get("models", {}).get("providers", {}).get("openai", {}).get("models", []):
+                    if model.get("id") in refs:
+                        model["contextWindow"] = self.CODEX_CONTEXT_WINDOW
+                if candidate == config and models == state["models"]:
+                    return self._codex_result(state, preview=self.runner.dry_run)
+            else:
+                # Upgrade an already active login without replacing its original restore record.
+                if not state["restore"].get("media"):
+                    state["restore"]["media"] = self._codex_configure_media(candidate, state["restore"].get("provider"))
+                self._codex_clean_catalog(candidate, state["restore"], models)
+            state["models"] = models
             state["status"] = "applying"
         else:
             models = self._codex_model_definitions()
