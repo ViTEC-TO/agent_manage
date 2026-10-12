@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 from .response import ProtocolError
+from .segment_timing import count, timed
 
 PAGE_BYTES = 320 * 1024
 CHUNK_BYTES = 96 * 1024
@@ -38,6 +39,7 @@ def fail(code, message):
     raise ProtocolError(code, message, level)
 
 
+@timed("jsonEncodeMs")
 def dumps(value, *, pretty=False):
     return json.dumps(value, ensure_ascii=False, **({"indent": 2} if pretty else {"separators": (",", ":")}))
 
@@ -119,6 +121,7 @@ def tree_entry(raw):
             "append": raw["id"], "side": side}
 
 
+@timed("branchSelectionMs")
 def select_rows(records):
     """July transcript-tree scan/path semantics, including opaque and side rows."""
     by_id, leaf, append, explicit_updates = {}, None, None, False
@@ -177,6 +180,7 @@ def generated_id(file):
 
 
 class SegmentReader:
+    @timed("readerInitMs")
     def __init__(self, request, env):
         self.input, self.env = request, env
         self.root, self.key, self.session_id = absolute(request["root"]), request["sessionKey"], request["sessionId"]
@@ -198,6 +202,7 @@ class SegmentReader:
     def expand_home(self, value):
         return self.env.get("HOME", str(Path.home())) + value[1:] if value == "~" or value.startswith("~/") else value
 
+    @timed("indexReadMs")
     def entry(self):
         try:
             file = safe_file(self.store, [self.store.parent])
@@ -219,6 +224,7 @@ class SegmentReader:
         body = b64url(dumps({**value, "scope": self.scope, "v": 1}).encode())
         return body + "." + b64url(hmac.new(self.token_key, body.encode(), hashlib.sha256).digest())
 
+    @timed("referenceValidationMs")
     def decode(self, value, kind):
         try:
             body, signature = value.split(".")
@@ -281,6 +287,7 @@ class SegmentReader:
             return False
         return False
 
+    @timed("fileLocateAndOpenMs")
     def open_transcript(self, entry, snapshot):
         candidates = self.candidates(entry)
         available = [candidate for candidate in candidates if candidate.exists()]
@@ -310,6 +317,7 @@ class SegmentReader:
             return fd, opened
         fail("CURSOR_EXPIRED" if snapshot else "SEGMENT_NOT_FOUND", "Transcript snapshot is no longer available" if snapshot else "Physical segment transcript is missing")
 
+    @timed("transcriptScanMs")
     def scan(self, fd, opened, entry, snapshot):
         boundary = snapshot.get("bytes") if snapshot else opened.st_size
         if type(boundary) is not int or not 0 <= boundary <= opened.st_size:
@@ -352,8 +360,11 @@ class SegmentReader:
             fail("CURSOR_EXPIRED", "Transcript snapshot changed")
         self.snapshot = snapshot or {"dev": str(opened.st_dev), "ino": str(opened.st_ino), "bytes": committed, "hash": fingerprint}
         self.fd = fd
+        count("transcriptBytes", committed)
+        count("recordsScanned", len(records))
         selected = select_rows(records)
         self.rows = [row for row in selected if row["hasMessage"] or row["meta"].get("type") in {"compaction", "custom_message"}]
+        count("messagesSelected", len(self.rows))
         self.by_id = {}
         for row in self.rows:
             identifier = self.identifier(row)
@@ -366,6 +377,7 @@ class SegmentReader:
     def identifier(row):
         return row["meta"].get("id") or "entry-" + format(row["start"], "x")
 
+    @timed("snapshotVerificationMs")
     def finish(self, payload):
         hasher, at = hashlib.sha256(), 0
         while at < self.snapshot["bytes"]:
@@ -376,6 +388,8 @@ class SegmentReader:
             at += len(block)
         if hasher.hexdigest() != self.snapshot["hash"]:
             fail("CURSOR_EXPIRED", "Transcript changed before response")
+        count("snapshotVerifyBytes", at)
+        count("messagesReturned", len(payload.get("messages", [])) + int("message" in payload))
         latest = self.entry()
         if "segment" in payload:
             payload["segment"]["isCurrent"] = latest.get("sessionId") == self.session_id
@@ -389,6 +403,7 @@ class SegmentReader:
         return {"method": "sessions.segments.message.get", "params": {"sessionKey": self.key, "sessionId": self.session_id,
                 "messageId": identifier, "ref": self.ref_token("message", messageId=identifier, view=view)}}
 
+    @timed("messageReadMs")
     def raw(self, row):
         data = os.pread(self.fd, row["length"], row["start"])
         if len(data) != row["length"]:
@@ -399,6 +414,7 @@ class SegmentReader:
     def local_media(value):
         return isinstance(value, str) and not re.match(r"https?://", value, re.I) and Path(value).suffix.lower() in EXTENSIONS
 
+    @timed("mediaReadAndHashMs")
     def local_media_read(self, value, *, with_bytes=False):
         if not self.local_media(value):
             fail("FORBIDDEN", "Unsupported media reference")
@@ -421,6 +437,7 @@ class SegmentReader:
             before = signature()
             key = (file, before)
             if not with_bytes and key in self.media_identities:
+                count("mediaCacheHits")
                 return self.media_identities[key]
             hasher, parts = hashlib.sha256(), []
             while True:
@@ -428,6 +445,7 @@ class SegmentReader:
                 if not block:
                     break
                 hasher.update(block)
+                count("mediaBytesRead", len(block))
                 if with_bytes:
                     parts.append(block)
             if signature() != before:
@@ -459,6 +477,7 @@ class SegmentReader:
                            "ref": self.ref_token("media", messageId=self.identifier(row), pointer=pointer, source=source,
                                                  **({"mediaHash": media_hash} if media_hash else {}))}}
 
+    @timed("messageBuildMs")
     def materialize(self, row, *, view="full"):
         raw = self.raw(row)
         message = raw["message"] if isinstance(raw.get("message"), dict) else ({"role": "system", "content": raw.get("content"), "customType": raw.get("customType")} if raw.get("type") == "custom_message" else {"role": "system", "content": [{"type": "text", "text": "Compaction"}], "compaction": raw})
@@ -499,6 +518,7 @@ class SegmentReader:
         visit(message, [])
         if media:
             message["mediaRefs"] = media
+        strip_thinking_signatures(message)
         # Build references against original field positions before removing tool
         # details. Otherwise an image following a text result would point at the
         # wrong raw block after compaction.
@@ -509,15 +529,18 @@ class SegmentReader:
             fail("MESSAGE_NOT_FOUND", "Message is not present in this segment snapshot")
         return self.by_id[identifier]
 
+    @timed("chunkEncodeMs")
     def chunk(self, data, offset, reference, **extra):
         if type(offset) is not int or not 0 <= offset <= len(data):
             fail("CURSOR_EXPIRED", "Invalid chunk boundary")
         end = min(len(data), offset + CHUNK_BYTES)
+        count("chunkBytes", end - offset)
         values = {"action": self.input["action"], "messageId": extra["messageId"], "offset": end}
         if self.input["action"] == "media":
             values.update(pointer=reference["pointer"], source=reference["source"], mediaHash=extra["sha256"])
         elif "view" in extra:
             values["view"] = extra["view"]
+            values["format"] = 2
         return {**extra, "encoding": "base64", "data": base64.b64encode(data[offset:end]).decode(), "offset": offset,
                 "totalBytes": len(data), "nextCursor": self.ref_token("chunk", **values) if end < len(data) else None}
 
@@ -537,6 +560,8 @@ class SegmentReader:
                 identifier = self.input["messageId"]
                 if reference and (reference.get("messageId") != identifier or cursor and reference.get("action") != "message"):
                     fail("CURSOR_EXPIRED", "Message reference mismatch")
+                if cursor and reference.get("format") != 2:
+                    fail("CURSOR_EXPIRED", "Message output format changed; restart the message read")
                 row = self.locate(identifier)
                 view = reference.get("view", "full") if reference else "full"
                 message = self.materialize(row, view=view)
@@ -614,14 +639,37 @@ class SegmentReader:
             os.close(fd)
 
 
-def command_preview(arguments):
+def preview_arguments(arguments):
+    if isinstance(arguments, str):
+        try:
+            # Some stored tool calls encode their arguments as JSON strings.
+            arguments = json.loads(arguments)
+        except ValueError:
+            return {}
     if not isinstance(arguments, dict):
-        return ""
+        return {}
     # Never summarize a code body by copying it; only show a bounded command/path.
-    value = next((arguments[key] for key in ("command", "cmd", "path", "file_path", "filePath") if isinstance(arguments.get(key), str)), "")
-    return re.sub(r"\s+", " ", value[:512]).strip()[:180]
+    for key in ("command", "cmd", "path", "file_path", "filePath", "url", "query", "pattern"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            preview = re.sub(r"\s+", " ", value[:512]).strip()[:180]
+            if preview:
+                return {key: preview}
+    return {}
 
 
+def strip_thinking_signatures(value):
+    """Display output needs readable thinking, not provider replay metadata."""
+    if isinstance(value, dict):
+        value.pop("thinkingSignature", None)
+        for child in value.values():
+            strip_thinking_signatures(child)
+    elif isinstance(value, list):
+        for child in value:
+            strip_thinking_signatures(child)
+
+
+@timed("toolCompactMs")
 def compact_tools(message):
     content = message.get("content")
     changed = False
@@ -630,8 +678,11 @@ def compact_tools(message):
         for block in content:
             if isinstance(block, dict) and block.get("type") in {"toolCall", "tool_use", "functionCall"}:
                 item = {key: block[key] for key in ("type", "id", "name", "toolCallId") if key in block}
-                preview = command_preview(block.get("arguments", block.get("input")))
-                item.update(arguments={}, summary=preview or item.get("name", "Tool call"))
+                arguments = preview_arguments(block.get("arguments") or block.get("input"))
+                preview = next(iter(arguments.values()), "")
+                item.update(arguments=arguments, summary=preview or item.get("name", "Tool call"))
+                if "input" in block:
+                    item["input"] = arguments.copy()
                 compacted.append(item)
                 changed = True
             else:

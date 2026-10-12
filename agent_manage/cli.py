@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import time
+
+_CLI_IMPORT_STARTED = time.perf_counter()
+
 import json
 import os
 import sys
@@ -7,6 +11,7 @@ from typing import List, Optional
 
 from . import __version__
 from .local import LocalRunner
+from .segment_timing import CURRENT, ReadTiming
 from .models import (
     AddAgentRequest,
     AddAgentsRequest,
@@ -40,6 +45,20 @@ IMAGE_QUALITY_CHOICES = InstanceManagerV2.IMAGE_QUALITY_CHOICES
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    commands = {"sessions-segments-history", "sessions-segments-message-get", "sessions-segments-media-get"}
+    if not commands.intersection(args):
+        return _main(args)
+    timing = ReadTiming()
+    timing.import_ms = _CLI_IMPORT_MS
+    token = CURRENT.set(timing)
+    try:
+        return _main(args)
+    finally:
+        CURRENT.reset(token)
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = JsonArgumentParser(prog="agent-manage")
     parser.add_argument("--openclaw-bin", default="openclaw")
@@ -199,6 +218,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             template_root=args.template_root,
             config_path=args.config_path,
         )
+        timing = CURRENT.get()
+        if timing is not None:
+            timing.phases["cliSetupMs"] = (time.perf_counter() - timing.started) * 1000
+            timing.calls["cliSetupMs"] = 1
+
 
         if args.command in ("create-instance", "configure-instance", "activate-instance"):
             request = CreateInstanceRequest(
@@ -594,6 +618,9 @@ def _reject_container_path_overrides(argv: List[str]) -> None:
     for option in forbidden:
         if option in argv or any(argument.startswith(f"{option}=") for argument in argv):
             raise CliArgumentError(f"{option} is not allowed in container runtime")
+
+
+_CLI_IMPORT_MS = (time.perf_counter() - _CLI_IMPORT_STARTED) * 1000
 
 
 if __name__ == "__main__":
