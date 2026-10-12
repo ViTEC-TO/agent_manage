@@ -73,6 +73,8 @@ class CodexManagementTest(unittest.TestCase):
         for agent in config["agents"]["list"]:
             self.assertEqual(agent["model"], {"primary": result["model"], "fallbacks": []})
         self.assertEqual(set(config["agents"]["list"][1]["models"]), expected)
+        self.assertEqual(set(config["models"]["providers"]), {"openai"})
+        self.assertEqual(config["models"]["mode"], "replace")
         self.assertEqual(config["auth"], self.original["auth"])
         self.assertEqual(self.auth_file.read_bytes(), self.auth_bytes)
         self.assertEqual(config["channels"], self.original["channels"])
@@ -90,9 +92,9 @@ class CodexManagementTest(unittest.TestCase):
         self.assertEqual(provider["api"], self.manager.CODEX_API)
         self.assertEqual(provider["baseUrl"], self.manager.CODEX_BASE_URL)
         self.assertEqual(provider["apiKey"], "test-image-key")
-        self.assertEqual(provider["models"][0]["baseUrl"], config["models"]["providers"]["openai"]["baseUrl"])
-        self.assertEqual(provider["models"][0]["api"], "openai-completions")
-        for row in provider["models"][1:]:
+        self.assertEqual({row["id"] for row in provider["models"]},
+                         {model_id for model_id, _ in self.manager.CODEX_MODELS} | {"gpt-image-2"})
+        for row in provider["models"]:
             self.assertEqual(row["baseUrl"], self.manager.CODEX_BASE_URL)
             self.assertEqual(row["api"], self.manager.CODEX_API)
             self.assertNotIn("apiKey", row)
@@ -125,9 +127,13 @@ class CodexManagementTest(unittest.TestCase):
         self.login()
         state = self.state()
         state["restore"].pop("media")
+        state["restore"].pop("catalog")
         state["provider_mode"] = "mixed_api_and_codex"
         self.manager._codex_state_path().write_text(json.dumps(state))
         config = json.loads(self.path.read_text())
+        config["models"]["mode"] = self.original["models"]["mode"]
+        config["models"]["providers"].update({provider: value for provider, value in self.original["models"]["providers"].items()
+                                             if provider != "openai"})
         config["models"]["providers"]["openai"]["baseUrl"] = self.original["models"]["providers"]["openai"]["baseUrl"]
         config["models"]["providers"]["openai"]["api"] = "openai-completions"
         config["models"]["providers"]["openai"]["models"][0].pop("baseUrl")
@@ -167,6 +173,7 @@ class CodexManagementTest(unittest.TestCase):
         self.login()
         state = self.state()
         state["restore"].pop("media")
+        state["restore"].pop("catalog")
         self.manager._codex_state_path().write_text(json.dumps(state))
         original_state = self.manager._codex_state_path().read_bytes()
         original_config = self.path.read_bytes()
@@ -182,6 +189,89 @@ class CodexManagementTest(unittest.TestCase):
                 self.login()
         self.assertEqual(self.path.read_bytes(), original_config)
         self.assertEqual(self.manager._codex_state_path().read_bytes(), original_state)
+
+    def test_cleans_all_provider_catalogs_and_restores_them_on_logout(self):
+        config = json.loads(self.path.read_text())
+        config["models"]["providers"]["google"] = {
+            "baseUrl": "https://api.dola.io/aigateway/shop/v1", "apiKey": "old-google-key",
+            "api": "google-generative-ai", "models": [{"id": "gemini-3.1-flash-image-preview", "name": "Old image"}]}
+        config["agents"]["defaults"]["imageGenerationModel"] = {
+            "primary": "google/gemini-3.1-flash-image-preview", "fallbacks": ["custom/mine"]}
+        config["agents"]["defaults"]["models"]["google/gemini-3.1-flash-image-preview"] = {"alias": "old-image"}
+        self.path.write_text(json.dumps(config))
+        self.login()
+        changed = json.loads(self.path.read_text())
+        self.assertEqual(set(changed["models"]["providers"]), {"openai"})
+        self.assertEqual(changed["models"]["mode"], "replace")
+        self.assertEqual(set(changed["agents"]["defaults"]["models"]),
+                         {"openai/" + model_id for model_id, _ in self.manager.CODEX_MODELS} | {"openai/gpt-image-2"})
+        self.assertEqual(self.state()["restore"]["catalog"]["providers"], config["models"]["providers"])
+        self.manager._codex_restore_models()
+        self.assertEqual(json.loads(self.path.read_text()), config)
+
+    def test_audio_connection_survives_without_its_old_model_catalog(self):
+        config = json.loads(self.path.read_text())
+        config["models"]["providers"]["google"] = {
+            "api": "google-generative-ai", "apiKey": "google-audio-key", "baseUrl": "https://generativelanguage.googleapis.com",
+            "models": [{"id": "gemini-3.1-flash-image-preview", "name": "Old image"}]}
+        config["tools"]["media"] = {"audio": {"models": [{"provider": "google", "model": "gemini-2.5-flash"}]}}
+        self.path.write_text(json.dumps(config))
+        self.login()
+        changed = json.loads(self.path.read_text())
+        self.assertEqual(changed["models"]["providers"]["google"],
+                         {**config["models"]["providers"]["google"], "models": []})
+        self.assertEqual(changed["tools"]["media"], config["tools"]["media"])
+        self.manager._codex_restore_models()
+        self.assertEqual(json.loads(self.path.read_text()), config)
+
+    def test_existing_media_login_cleans_catalog_without_replacing_first_backup(self):
+        self.login()
+        state = self.state()
+        state["restore"].pop("catalog")
+        self.manager._codex_state_path().write_text(json.dumps(state))
+        changed = json.loads(self.path.read_text())
+        changed["models"]["mode"] = self.original["models"]["mode"]
+        changed["models"]["providers"].update({provider: value for provider, value in self.original["models"]["providers"].items()
+                                              if provider != "openai"})
+        changed["models"]["providers"]["openai"]["models"] += [{"id": "old-chat", "name": "Old Chat"}]
+        changed["agents"]["defaults"]["models"]["custom/mine"] = {}
+        changed["agents"]["list"][1]["models"]["custom/mine"] = {}
+        self.path.write_text(json.dumps(changed))
+        self.login()
+        current = json.loads(self.path.read_text())
+        self.assertEqual(set(current["models"]["providers"]), {"openai"})
+        self.assertNotIn("custom/mine", current["agents"]["defaults"]["models"])
+        self.assertNotIn("custom/mine", current["agents"]["list"][1]["models"])
+        self.assertNotIn("old-chat", [row["id"] for row in current["models"]["providers"]["openai"]["models"]])
+        self.assertEqual(self.state()["restore"]["provider"], state["restore"]["provider"])
+        self.assertEqual(self.state()["restore"]["media"], state["restore"]["media"])
+        self.manager._codex_restore_models()
+        self.assertEqual(json.loads(self.path.read_text()), self.original)
+
+    def test_catalog_restore_preserves_new_providers_and_original_missing_mode(self):
+        config = json.loads(self.path.read_text())
+        config["models"].pop("mode")
+        self.path.write_text(json.dumps(config))
+        self.login()
+        changed = json.loads(self.path.read_text())
+        added = {"api": "openai-completions", "baseUrl": "https://new.example/v1", "models": [{"id": "new", "name": "New"}]}
+        changed["models"]["providers"]["later"] = added
+        self.path.write_text(json.dumps(changed))
+        self.manager._codex_restore_models()
+        config["models"]["providers"]["later"] = added
+        self.assertEqual(json.loads(self.path.read_text()), config)
+
+    def test_tts_connection_survives_with_no_old_model_definitions(self):
+        config = json.loads(self.path.read_text())
+        config["messages"] = {"tts": {"provider": "custom"}}
+        self.path.write_text(json.dumps(config))
+        self.login()
+        current = json.loads(self.path.read_text())
+        self.assertEqual(current["models"]["providers"]["custom"],
+                         {**config["models"]["providers"]["custom"], "models": []})
+        self.assertEqual(current["messages"], config["messages"])
+        self.manager._codex_restore_models()
+        self.assertEqual(json.loads(self.path.read_text()), config)
 
     def test_pure_codex_provider_has_native_format_and_no_key(self):
         config = json.loads(self.path.read_text())
@@ -212,6 +302,56 @@ class CodexManagementTest(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), config)
         self.assertEqual(self.manager._codex_state_path().read_bytes(), backup)
         self.assertEqual(stat.S_IMODE(self.manager._codex_state_path().stat().st_mode), 0o600)
+
+    def test_existing_login_updates_context_and_preserves_selection_and_restore(self):
+        self.login()
+        state = self.state()
+        restore = state["restore"]
+        for row in state["models"]:
+            row.pop("contextWindow")
+        self.manager._codex_state_path().write_text(json.dumps(state))
+        config = json.loads(self.path.read_text())
+        config["agents"]["defaults"]["model"]["primary"] = "openai/gpt-6-luna"
+        for row in config["models"]["providers"]["openai"]["models"]:
+            row["contextWindow"] = 200000
+        self.path.write_text(json.dumps(config))
+        auth_before = self.auth_file.read_bytes()
+        result = self.login()
+        current = json.loads(self.path.read_text())
+        self.assertEqual(result["model"], "openai/gpt-6-luna")
+        self.assertEqual(self.state()["restore"], restore)
+        self.assertEqual(self.auth_file.read_bytes(), auth_before)
+        for row in current["models"]["providers"]["openai"]["models"]:
+            self.assertEqual(row["contextWindow"], 200000 if row["id"] == "gpt-image-2" else 258000)
+        self.assertTrue(all(row["contextWindow"] == 258000 for row in result["models"]))
+        before = self.path.read_bytes(), self.manager._codex_state_path().read_bytes()
+        self.login()
+        self.assertEqual((self.path.read_bytes(), self.manager._codex_state_path().read_bytes()), before)
+        self.manager._codex_restore_models()
+        self.assertEqual(json.loads(self.path.read_text()), self.original)
+
+    def test_context_upgrade_write_failure_restores_active_login(self):
+        self.login()
+        state = self.state()
+        for row in state["models"]:
+            row.pop("contextWindow")
+        self.manager._codex_state_path().write_text(json.dumps(state))
+        config = json.loads(self.path.read_text())
+        for row in config["models"]["providers"]["openai"]["models"]:
+            row.pop("contextWindow", None)
+        self.path.write_text(json.dumps(config))
+        before = self.path.read_bytes(), self.manager._codex_state_path().read_bytes()
+        from agent_manage.codex_management import _private_json
+
+        def fail_active(path, body):
+            if path == self.manager._codex_state_path() and body.get("status") == "active":
+                raise OSError("state write failed")
+            return _private_json(path, body)
+
+        with patch("agent_manage.codex_management._private_json", side_effect=fail_active):
+            with self.assertRaisesRegex(OSError, "state write failed"):
+                self.login()
+        self.assertEqual((self.path.read_bytes(), self.manager._codex_state_path().read_bytes()), before)
 
     def test_failed_validation_changes_nothing(self):
         original = self.path.read_bytes()

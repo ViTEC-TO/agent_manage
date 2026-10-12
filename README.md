@@ -277,21 +277,27 @@ Server API 需要允许并转发上述三个命令；本仓库不包含网页或
 - 授权完成后安装 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`，
   默认 `gpt-6.1-sol`。模型 ID 依据 [OpenAI 官方 Codex 模型文档](https://learn.chatgpt.com/docs/models)，
   核对日期为 2026-10-10；配置列表不代表账号拥有全部模型权限。
+  四个聊天模型均显式配置 `contextWindow: 258000`；已登录实例再次执行 `codex-login` 可更新此上限，保留当前选中的模型和最初的登出恢复记录。
   当前全部 agent 的聊天模型、已有 utility / heartbeat / subagent 选择一起切换。
   `set-model` 保持原有行为，只切全局默认模型，agent 独立指定的模型继续保留。
 - 普通 Codex provider 使用 `openai`、`baseUrl: https://chatgpt.com/backend-api/codex`、
   `api: openai-chatgpt-responses`、`auth: oauth`、`agentRuntime: {id: openclaw}`。
-  原 OpenAI provider 同时承载图片/音频 API 时，保留 API key 与原默认传输，
-  provider 默认传输也切为 Codex，聊天和绘图优先用全局 OAuth。
+  原 OpenAI provider 同时承载音频 API 时保留 API key，
+  provider 默认传输切为 Codex，聊天和绘图优先用全局 OAuth。
   绘图选择 `openai/gpt-image-2`，保留图片超时等参数，并清空原绘图 fallback；
   通过旧版原生 `image_generate` 的 Codex Responses 路径执行，实际权限与额度由账号决定。
-  保留原 API key，原非 Codex 模型条目单独保存原传输和地址。
+  清除全部旧 provider 模型条目和旧模型白名单，只配置 Codex 聊天模型与 `gpt-image-2`。
+  设置 `models.mode: replace`，避免原目录或自动发现的聊天模型重新合并进来。
+  无音频用途的旧 provider 从当前配置移除；显式音频/TTS 所需的连接配置与凭据保留，但其模型列表清空。
+  原 provider、完整模型目录、目录模式和白名单保存到私有恢复记录，登出时恢复。
   已校验的服务器 `2026.7.1` / `-1` / `-2` / `2026.7.35` 的音频认证仍要求 API key，音频与 TTS 不切 OAuth：
   已配置的 OpenAI 音频条目保留原地址；未显式指定音频模型且原 OpenAI provider 有 key 时，
   固定 `gpt-4o-transcribe` 到原 API 地址，避免音频请求误发到 Codex 聊天接口。
   其他显式音频 provider、CLI、已有禁用状态保持原配置。
-  登出恢复原 provider、绘图和音频配置；已登录旧配置再次执行 `codex-login` 即应用绘图策略，
+  登出恢复原 provider、绘图和音频配置；已登录旧配置再次执行 `codex-login` 即应用绘图与旧目录清理策略，
   不重新授权、不替换最初的模型备份。`result.media` 返回绘图切换与音频保留原因。
+  `image_generate action=list` 还会展示 OpenClaw 插件的内置能力目录，这与配置中的模型列表独立；
+  清理模型配置不会卸载插件或禁止工具显式覆盖模型。绘图应省略 `model` 使用默认值，或指定 `openai/gpt-image-2`。
 - `models` 返回 Codex 聊天模型；`update-model` 和 `refresh-agent` 的模型部分
   返回 `skipped: true, reason: codex_login_active`，模板刷新继续。
   `configure-instance` 等重新配置 provider 的操作需要先登出。
