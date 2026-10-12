@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 from .local import CommandError
+from .segment_timing import CURRENT
 
 TYPE_CODE_SUCCESS = 1
 TYPE_CODE_ACCEPTED = 2
@@ -118,6 +119,20 @@ def redact_sensitive_values(value: object, secrets: list[str]) -> object:
 
 
 def print_json(value: object) -> None:
+    timing = CURRENT.get()
+    if timing is not None:
+        # Measure one normal serialization before finalizing diagnostic metadata.
+        # The final metadata serialization and stdout delivery cannot measure
+        # themselves inside the same response.
+        with timing.span("responseSerializationMs"):
+            serialized = json.dumps(value, indent=2, ensure_ascii=False)
+            payload_bytes = len(serialized.encode("utf-8"))
+        timing.counts["responseBytesBeforeTimingFinalization"] = payload_bytes
+        value = dict(value)
+        if isinstance(value.get("result"), dict):
+            value["result"] = {**value["result"], "timings": timing.snapshot()}
+        else:
+            value["timings"] = timing.snapshot()
     serialized = json.dumps(value, indent=2, ensure_ascii=False)
     original_utf8_bytes = len(serialized.encode("utf-8"))
     budget_applied = original_utf8_bytes > MAX_PROTOCOL_RESPONSE_BYTES
@@ -133,6 +148,7 @@ def print_json(value: object) -> None:
                 "message": "AgentManager response exceeds the 512 KiB output budget",
                 "serverTimeStamp": _server_timestamp(),
                 "restartRequired": False,
+                **({"timings": timing.snapshot()} if timing is not None else {}),
             },
             indent=2,
             ensure_ascii=False,

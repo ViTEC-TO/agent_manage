@@ -123,14 +123,15 @@ Gateway 认证配置变更也会使旧引用失效。页中保留内部消息，
 新建页面默认 `view: compact`，原命令无需加参数。主机按固定规则处理，不调用模型做摘要：
 
 - 用户消息、助手正文和已保存思考保留；图片、音频及媒体引用保留。
-- `toolCall` / `tool_use` / `functionCall` 保留类型、ID、工具名，`arguments` 返回 `{}`。新字段 `summary` 是命令或文件路径的一行短预览，最多 180 字。没有命令/路径时显示工具名，不推测操作含义。
+- `toolCall` / `tool_use` / `functionCall` 保留类型、ID、工具名，`arguments` 保留一个截短的预览字段（`command` / `cmd` / `path` / `file_path` / `filePath` / `url` / `query` / `pattern`），最多 180 字并压成一行；原本使用 `input` 的调用也返回同一预览。完整代码、额外参数不传。新字段 `summary` 同样提供这段预览，兼容前端从旧参数字段生成摘要的逻辑。没有这些字段时只显示工具名，不推测操作含义。
 - `toolResult` / `tool` / `function` 保留工具名、调用关联、错误标记和附件；正文代码、日志、完整输出与任意 `details` 不传。`toolSummary` 返回 `{name, status}`，明确 `isError: true/false` 才返回 `error/success`，未记录时为 `unknown`。
-- 被精简的消息带 `__openclaw.compacted: true, reason: "tool_details_omitted"`。省略的工具详情不带全文补读引用，前端无需补取，也不要把空 `arguments` 当成原始参数。
+- 被精简的消息带 `__openclaw.compacted: true, reason: "tool_details_omitted"`。省略的工具详情不带全文补读引用，前端无需补取；返回的预览参数不能用于重新执行命令。
+- 所有历史/消息展示响应（包括 `view: full`）移除 `thinkingSignature`，保留可读 `thinking`。这是返回时过滤，本地 transcript 不修改，OpenClaw 继续对话所需的加密推理数据仍在原始记录里。
 
 例如操作内容块为：
 
 ```json
-{"type":"toolCall","id":"call-1","name":"exec","arguments":{},"summary":"grep -n 'auth' /app/extensions/openai/speech-providers.ts"}
+{"type":"toolCall","id":"call-1","name":"exec","arguments":{"command":"grep -n 'auth' /app/extensions/openai/speech-providers.ts"},"summary":"grep -n 'auth' /app/extensions/openai/speech-providers.ts"}
 ```
 
 结果消息为：
@@ -140,6 +141,7 @@ Gateway 认证配置变更也会使旧引用失效。页中保留内部消息，
 ```
 
 前端用 `summary` 展示操作预览，用 `toolSummary` 展示结果，不再从完整参数和代码输出生成预览。
+已有前端从 `arguments.command/path` 等字段取预览时也可直接显示，无需先适配 `summary`。
 原先的完整模式仍可显式使用 `--view full`；这不是默认浏览流程，也不要求前端调用它。普通超大正文仍遵循原有输出预算和补读规则。
 游标绑定首次页面的 `view`，后续可省略参数并继承；切换模式需重新打开该段，不能用原游标改模式。
 升级前签发且未过期的页游标没有 `view`，继续沿用原完整模式；重新打开该段即用精简模式。
@@ -191,6 +193,73 @@ agent-manage sessions-segments-message-get \
 继续调用同一补读命令，传 `--cursor <nextCursor>`；此时可以省略 `--ref`。
 逐块 Base64 解码为字节，按 `offset` 拼接，直到 `nextCursor: null`。
 检查长度和 SHA-256，再整体 UTF-8 解码并 JSON.parse。不要逐块直接解码文本，UTF-8 字符可能跨块。
+本次展示格式变化前签发的消息分块游标返回 `CURSOR_EXPIRED`，需要从首块重新读取，避免新旧过滤格式混合拼接；历史页游标和附件字节分块不受此格式标记影响。
+
+## 耗时定位
+
+三个读取命令每次自动记录计时，不需要额外参数。成功响应位于 `result.timings`；失败时 `result` 为 `null`，诊断位于 AgentManager 输出的外层 `timings`（即平台包装中的 `output.timings`）。API 应透传该字段。
+
+主要字段：
+
+| 字段 | 测量范围 |
+| --- | --- |
+| `version` | 诊断结构版本，目前为 1 |
+| `startedAtUnixMs` / `measuredAtUnixMs` | 主机上本次计时开始/最后采样的 Unix 毫秒，可用于和后台日志关联；跨机器比较需时钟同步 |
+| `hostElapsedMs` | CLI 入口到最后采样的墙钟耗时，包含初始化、读取和首次响应序列化 |
+| `hostCpuMs` | 同一测量窗口内进程消耗的 CPU 时间；与墙钟时间不同 |
+| `hostReadMs` | 进入读取处理器到读取完成/失败的耗时，兼容此前字段 |
+| `cliModuleImportMs` | 本进程加载 CLI 模块及依赖的耗时；在 CLI 入口之前，独立于 `hostElapsedMs`，不是完整 Python 启动时间 |
+| `phasesMs` | 各阶段累计墙钟耗时，详见下表 |
+| `phaseCalls` | 各阶段调用次数，键与 `phasesMs` 相同 |
+| `counts` | 记录数和字节数，仅记录数量，不包含路径、命令正文或凭据 |
+
+`phasesMs` 可能包含：
+
+| 阶段 | 含义 |
+| --- | --- |
+| `cliSetupMs` | CLI 参数解析和管理器初始化 |
+| `environmentAndVersionMs` | 执行环境、程序定位和本地版本信息检查 |
+| `configReadMs` | 读取实例配置 |
+| `readerInitMs` | 读取器、路径和引用签名上下文初始化 |
+| `indexReadMs` | 读取会话索引与段归属校验，通常开始/结束各一次 |
+| `referenceValidationMs` | 游标/引用签名、作用域和期限校验 |
+| `fileLocateAndOpenMs` | 定位原始文件/reset 归档并打开 |
+| `transcriptScanMs` | 扫描 JSONL 快照、解析记录、哈希和选取有效消息 |
+| `branchSelectionMs` | 有效分支选择，是 `transcriptScanMs` 的子阶段 |
+| `messageReadMs` | 按字节位置读取所选消息 |
+| `messageBuildMs` | 构造消息、处理媒体引用、过滤签名和精简工具；包含相关子阶段 |
+| `mediaReadAndHashMs` | 附件读取、哈希或缓存检查 |
+| `toolCompactMs` | 精简工具记录 |
+| `jsonEncodeMs` | 读取器内部的 JSON 编码，包括引用和消息大小计算 |
+| `chunkEncodeMs` | 分块编码及续读引用生成 |
+| `snapshotVerificationMs` | 返回前再次校验文件快照和会话归属，包含末次 `indexReadMs` |
+| `responseSerializationMs` | 计时字段最终定稿前的一次完整响应 JSON 序列化及 UTF-8 大小计算 |
+
+阶段存在嵌套，**不能把所有阶段相加作为总耗时**。总耗时看 `hostElapsedMs`；未执行的阶段不出现，失败也保留已执行阶段。
+
+`counts` 按实际操作返回：`transcriptBytes`、`recordsScanned`、`messagesSelected`、`messagesReturned`、`snapshotVerifyBytes`、`mediaBytesRead`、`mediaCacheHits`、`chunkBytes`、`responseBytesBeforeTimingFinalization`。最后一项是计时信息最终定稿前的响应 UTF-8 字节数，不等于最终网络传输字节数；`messagesReturned` 是内联返回条数，分块消息的大小看 `chunkBytes`。
+
+以下仅为结构示例，数值不是线上实测：
+
+```json
+{
+  "timings": {
+    "version": 1,
+    "startedAtUnixMs": 1791810000000,
+    "measuredAtUnixMs": 1791810000014,
+    "hostElapsedMs": 14.2,
+    "hostCpuMs": 11.8,
+    "hostReadMs": 10.1,
+    "cliModuleImportMs": 47.3,
+    "phasesMs": {"cliSetupMs": 3.1, "indexReadMs": 0.4, "transcriptScanMs": 2.8, "responseSerializationMs": 0.5},
+    "phaseCalls": {"cliSetupMs": 1, "indexReadMs": 2, "transcriptScanMs": 1, "responseSerializationMs": 1},
+    "counts": {"transcriptBytes": 12000, "recordsScanned": 31, "messagesReturned": 30}
+  }
+}
+```
+
+主机测不到 Server API/任务编排排队、转发和浏览器网络耗时；这些需要 API 层记录。Python 在 CLI 模块计时前的启动、最终计时元数据序列化、stdout 写出/传输也不包含在 `hostElapsedMs` 中，无法在同一份响应内准确返回该响应写完后的耗时。
+若浏览器请求约 1–3 秒，而主机 `hostElapsedMs` 与模块加载耗时只有几十毫秒，下一步检查 API、任务编排转发和网络链路。
 
 ## 图片、音频等附件
 

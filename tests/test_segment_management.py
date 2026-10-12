@@ -14,7 +14,7 @@ from agent_manage.cli import main
 from agent_manage.local import LocalRunner
 from agent_manage.orchestrator import InstanceManagerV2
 from agent_manage.response import ProtocolError, build_error_response, build_success_response, print_json
-from agent_manage.segment_reader import read_segment, select_rows
+from agent_manage.segment_reader import SegmentReader, read_segment, select_rows
 
 
 class SegmentCliTest(unittest.TestCase):
@@ -51,7 +51,9 @@ class SegmentCliTest(unittest.TestCase):
                 self.assertEqual(main(["sessions-segments-history", "--session-key", "agent:main:thread:x",
                                        "--session-id", "old", "--edge", "start", "--limit", "4"]), 0)
             call.assert_called_once_with("agent:main:thread:x", "old", edge="start", limit=4, cursor=None, view=None)
-            self.assertEqual(json.loads(output.getvalue())["result"], {"messages": []})
+            result = json.loads(output.getvalue())["result"]
+            self.assertEqual(result["messages"], [])
+            self.assertIn("responseSerializationMs", result["timings"]["phasesMs"])
 
     def test_domain_error_code_survives_cli(self):
         with patch.object(InstanceManagerV2, "segment_history", side_effect=ProtocolError("FORBIDDEN", "Denied")):
@@ -59,6 +61,7 @@ class SegmentCliTest(unittest.TestCase):
             with redirect_stdout(output):
                 self.assertEqual(main(["sessions-segments-history", "--session-key", "agent:main:thread:x", "--session-id", "old"]), 1)
             self.assertEqual(json.loads(output.getvalue())["error"]["code"], "FORBIDDEN")
+            self.assertIn("timings", json.loads(output.getvalue()))
 
     def test_history_cursor_and_message_reference_forwarding(self):
         shared = ["--session-key", "agent:main:thread:x", "--session-id", "old"]
@@ -154,6 +157,12 @@ class DirectSegmentReaderTest(unittest.TestCase):
         ref = page["messages"][0]["fullMessageRef"]["params"]["ref"]
         request = {**self.request, "action": "message", "messageId": "assistant", "ref": ref}
         part = read_segment(request, os.environ)
+        reader = SegmentReader(self.request, os.environ)
+        legacy = reader.decode(part["nextCursor"], "chunk")
+        legacy.pop("format")
+        with self.assertRaises(ProtocolError) as error:
+            read_segment({**request, "cursor": reader.token(legacy)}, os.environ)
+        self.assertEqual(error.exception.code, "CURSOR_EXPIRED")
         data = b""
         while True:
             self.assertEqual(part["view"], "compact")
@@ -163,7 +172,7 @@ class DirectSegmentReaderTest(unittest.TestCase):
             part = read_segment({**request, "cursor": part["nextCursor"]}, os.environ)
         message = json.loads(data)
         self.assertEqual(message["content"][0]["thinking"], thought)
-        self.assertEqual(message["content"][1]["arguments"], {})
+        self.assertEqual(message["content"][1]["arguments"], {"command": "echo ready"})
         self.assertNotIn("hidden original code", data.decode())
 
     def test_empty_message_and_zero_timestamp_are_retained(self):
@@ -172,6 +181,47 @@ class DirectSegmentReaderTest(unittest.TestCase):
         self.assertEqual(page["messages"][0]["id"], "empty")
         self.assertEqual(page["messages"][0]["timestamp"], 0)
         self.assertEqual(page["segment"]["startedAt"], 0)
+
+    def test_thinking_signature_removed_from_all_display_reads_only(self):
+        signature = json.dumps({"id": "rs-fixture", "type": "reasoning", "encrypted_content": "encrypted" * 50000})
+        record = {"type": "message", "id": "thought", "parentId": None,
+                  "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "Readable thought",
+                              "thinkingSignature": signature}], "thinkingSignature": signature}}
+        self.file.write_text(json.dumps(record) + "\n")
+        before = self.file.read_bytes()
+        for view in ("compact", "full"):
+            page = read_segment({**self.request, "view": view}, os.environ)
+            message = page["messages"][0]
+            self.assertEqual(message["content"][0], {"type": "thinking", "thinking": "Readable thought"})
+            self.assertNotIn("thinkingSignature", message)
+            self.assertNotIn("fullMessageRef", message)
+            self.assertLess(len(json.dumps(page)), 1000)
+        fetched = read_segment({**self.request, "action": "message", "messageId": "thought"}, os.environ)
+        self.assertEqual(fetched["message"]["content"][0]["thinking"], "Readable thought")
+        self.assertNotIn("thinkingSignature", json.dumps(fetched))
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_compact_arguments_remain_compatible_with_existing_ui(self):
+        calls = [
+            {"type": "toolCall", "id": "exec", "name": "exec", "arguments": {"command": "rg\n auth " + "x" * 1000, "code": "omit"}},
+            {"type": "toolCall", "id": "read", "name": "read", "arguments": {"path": "/app/extensions/openai/speech-providers.ts", "offset": 318, "limit": 500}},
+            {"type": "tool_use", "id": "query", "name": "search", "input": {"query": "search text", "large": "omit"}},
+            {"type": "toolCall", "id": "encoded", "name": "exec", "arguments": json.dumps({"cmd": "echo ready", "code": "omit"})},
+        ]
+        self.file.write_text(json.dumps({"type": "message", "id": "calls", "parentId": None,
+                                        "message": {"role": "assistant", "content": calls}}) + "\n")
+        blocks = read_segment(self.request, os.environ)["messages"][0]["content"]
+        keys = ("command", "cmd", "path", "file_path", "filePath", "url", "query", "pattern")
+        for block in blocks:
+            # The current frontend derives preview from these original argument
+            # fields, without reading the newly introduced summary field.
+            preview = next((block["arguments"].get(key) for key in keys if isinstance(block["arguments"].get(key), str)), "")
+            self.assertTrue(preview)
+            self.assertLessEqual(len(preview), 180)
+            self.assertNotIn("\n", preview)
+            self.assertEqual(preview, block["summary"])
+            self.assertNotIn("code", block["arguments"])
+        self.assertEqual(blocks[2]["input"], {"query": "search text"})
 
 
 @unittest.skipUnless(os.environ.get("AGENT_MANAGE_TEST_OPENCLAW_BIN"), "Set July OpenClaw for native history tests")
@@ -506,7 +556,7 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
         self.assertEqual(assistant["content"][0]["text"], call["message"]["content"][0]["text"])
         self.assertEqual(assistant["content"][1], call["message"]["content"][1])
         summary = assistant["content"][2]
-        self.assertEqual(summary["arguments"], {})
+        self.assertEqual(summary["arguments"], {"command": summary["summary"]})
         self.assertLessEqual(len(summary["summary"]), 180)
         self.assertTrue(summary["summary"].startswith("grep"))
         self.assertEqual(tool["toolSummary"], {"name": "exec", "status": "success"})
@@ -546,6 +596,17 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
         with patch("subprocess.run", side_effect=AssertionError("reader must not start processes")):
             page = self.manager.segment_history(self.key, self.ids[0], limit=1)
         self.assertEqual(page["messages"][0]["id"], "s0-6")
+        self.assertIsInstance(page["timings"]["hostReadMs"], (int, float))
+        self.assertGreaterEqual(page["timings"]["hostReadMs"], 0)
+        phases = page["timings"]["phasesMs"]
+        for name in ("environmentAndVersionMs", "configReadMs", "readerInitMs", "indexReadMs",
+                     "fileLocateAndOpenMs", "transcriptScanMs", "branchSelectionMs", "messageBuildMs",
+                     "messageReadMs", "snapshotVerificationMs"):
+            self.assertGreaterEqual(phases[name], 0, name)
+        self.assertEqual(page["timings"]["phaseCalls"]["indexReadMs"], 2)
+        self.assertEqual(page["timings"]["counts"]["messagesReturned"], 1)
+        self.assertEqual(page["timings"]["counts"]["recordsScanned"], 8)
+        self.assertEqual(page["timings"]["counts"]["transcriptBytes"], file.stat().st_size)
 
     def test_transcript_index_symlinks_and_header_mismatch_rejected(self):
         saved = self.paths[0].read_bytes()

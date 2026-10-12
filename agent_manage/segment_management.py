@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from .segment_reader import read_segment
+from .segment_timing import CURRENT, measured_read
 
 
 class SegmentManagementMixin:
@@ -31,6 +32,7 @@ class SegmentManagementMixin:
             raise ValueError("media read requires ref or cursor")
         return self._segment_bridge("media", session_key, session_id, ref=ref, cursor=cursor)
 
+    @measured_read
     def _segment_bridge(self, action, session_key, session_id, **params):
         if not isinstance(session_key, str) or not re.fullmatch(r"agent:[a-zA-Z0-9_-]+:.+", session_key):
             raise ValueError("session-key must be a full agent session key")
@@ -42,15 +44,17 @@ class SegmentManagementMixin:
             value = params.get(key)
             if value is not None and (not isinstance(value, str) or not value or len(value) > 8192):
                 raise ValueError(f"Invalid {key}")
-        env = self.runner._command_env()
-        binary = shutil.which(self.bin, path=env.get("PATH"))
-        if not binary:
-            raise FileNotFoundError("OpenClaw is required for segment history")
-        package = Path(binary).resolve().parent
-        info = json.loads((package / "package.json").read_text())
-        if info.get("name") != "openclaw" or not re.fullmatch(r"2026\.7\.[1-9][0-9]*(?:-[1-9][0-9]*)?", str(info.get("version", ""))):
-            raise ValueError("Segment history currently supports server OpenClaw 2026.7.x only")
-        config = self._load_config()
+        with CURRENT.get().span("environmentAndVersionMs"):
+            env = self.runner._command_env()
+            binary = shutil.which(self.bin, path=env.get("PATH"))
+            if not binary:
+                raise FileNotFoundError("OpenClaw is required for segment history")
+            package = Path(binary).resolve().parent
+            info = json.loads((package / "package.json").read_text())
+            if info.get("name") != "openclaw" or not re.fullmatch(r"2026\.7\.[1-9][0-9]*(?:-[1-9][0-9]*)?", str(info.get("version", ""))):
+                raise ValueError("Segment history currently supports server OpenClaw 2026.7.x only")
+        with CURRENT.get().span("configReadMs"):
+            config = self._load_config()
         payload = {"action": action, "sessionKey": session_key, "sessionId": session_id,
                    "config": config, "root": str(self.config_path.parent), **params}
         return read_segment(payload, env)
