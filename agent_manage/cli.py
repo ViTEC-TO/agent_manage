@@ -98,12 +98,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     for command in ("sessions-segments-history", "sessions-segments-message-get", "sessions-segments-media-get"):
         segment = subparsers.add_parser(command)
-        segment.add_argument("--session-key", required=True)
+        segment.add_argument("--session-key", "--session-k", dest="session_key", required=True,
+                             help="logical session key; --session-k is a command-channel compatibility alias")
         segment.add_argument("--session-id", required=True)
         segment.add_argument("--cursor")
         if command == "sessions-segments-history":
             segment.add_argument("--edge", choices=["start", "end"])
             segment.add_argument("--limit", type=int, default=30)
+            segment.add_argument("--view", choices=["compact", "full"],
+                                 help="default: compact tool commands/results; retain text and thinking")
         elif command == "sessions-segments-message-get":
             segment.add_argument("--message-id", required=True)
             segment.add_argument("--ref", help="snapshot reference returned by history")
@@ -267,7 +270,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.command == "sessions-segments-history":
             result = client.segment_history(args.session_key, args.session_id, edge=args.edge,
-                                            limit=args.limit, cursor=args.cursor)
+                                            limit=args.limit, cursor=args.cursor, view=args.view)
             print_json(build_success_response(result))
             return 0
         if args.command == "sessions-segments-message-get":
