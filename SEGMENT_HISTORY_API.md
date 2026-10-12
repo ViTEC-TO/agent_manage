@@ -10,6 +10,44 @@ Server API 已支持转发任意 AgentManager 命令时，可以直接通过现�
 | `sessions.segments.message.get` | `sessions-segments-message-get` |
 | `sessions.segments.media.get` | `sessions-segments-media-get` |
 
+### 平台参数到 CLI 参数的映射
+
+点分 WSS 协议的 `params` 使用驼峰字段；AgentManager 命令通道若按连字符键转 CLI，则 `parameters` 使用下表中间列。
+`agent_manage` 只接收 CLI 参数，不解析平台的 `commandCode` 或 `parameters`；平台必须显式完成映射，不能只把 JSON 传给主机。
+
+| WSS 字段 | 命令通道参数键 | CLI 参数 |
+| --- | --- | --- |
+| `sessionKey` | `session-key` | `--session-key` |
+| `sessionId` | `session-id` | `--session-id` |
+| `messageId` | `message-id` | `--message-id` |
+| `edge` | `edge` | `--edge` |
+| `limit` | `limit` | `--limit` |
+| `cursor` | `cursor` | `--cursor` |
+| `ref` | `ref` | `--ref` |
+
+三个命令均要求 `session-key`、`session-id`；消息补读还要求 `message-id`。
+附件首次读取要求 `ref`，分块续读可仅传 `cursor`。历史的 `cursor` 与 `edge` 互斥。
+平台如有参数白名单，需按命令允许这些参数，尤其不能遗漏 `session-key`。
+例如平台请求（是否支持这套转发需在 Server API 核实）：
+
+```json
+{
+  "commandCode": "agent.sessions-segments-history",
+  "parameters": {
+    "session-key": "agent:example:dashboard:thread-key",
+    "session-id": "00000000-0000-4000-8000-000000000001",
+    "edge": "end",
+    "limit": "30"
+  }
+}
+```
+
+应构造如下 argv（每个值保持为一个独立参数，不通过 shell 字符串拼接）：
+
+```json
+["sessions-segments-history", "--session-key", "agent:example:dashboard:thread-key", "--session-id", "00000000-0000-4000-8000-000000000001", "--edge", "end", "--limit", "30"]
+```
+
 ## 分段索引
 
 沿用 OpenClaw `sessions.usage`，参数 `key: <sessionKey>, groupBy: family, limit: 1`。

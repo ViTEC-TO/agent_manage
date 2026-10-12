@@ -25,7 +25,9 @@ class SegmentManagementMixin:
         return self._segment_bridge("message", session_key, session_id,
                                     messageId=message_id, ref=ref, cursor=cursor)
 
-    def segment_media_get(self, session_key, session_id, ref, *, cursor=None):
+    def segment_media_get(self, session_key, session_id, ref=None, *, cursor=None):
+        if ref is None and cursor is None:
+            raise ValueError("media read requires ref or cursor")
         return self._segment_bridge("media", session_key, session_id, ref=ref, cursor=cursor)
 
     def _segment_bridge(self, action, session_key, session_id, **params):
