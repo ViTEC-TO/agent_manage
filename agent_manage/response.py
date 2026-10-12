@@ -24,6 +24,15 @@ class CliArgumentError(ValueError):
     pass
 
 
+class ProtocolError(Exception):
+    """A domain error whose stable code is part of the public CLI contract."""
+
+    def __init__(self, code: str, message: str, type_code: int = TYPE_CODE_INVALID_ARGUMENT):
+        super().__init__(message)
+        self.code = code
+        self.type_code = type_code
+
+
 class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise CliArgumentError(message)
@@ -152,6 +161,8 @@ def _embedded_error_payload(exc: Exception) -> Dict[str, Any]:
 
 
 def _type_code_for_exception(exc: Exception, payload: Dict[str, Any]) -> int:
+    if isinstance(exc, ProtocolError):
+        return exc.type_code
     if isinstance(exc, FileNotFoundError):
         return TYPE_CODE_NOT_FOUND
     if isinstance(exc, (CliArgumentError, ValueError)):
@@ -170,6 +181,8 @@ def _type_code_for_exception(exc: Exception, payload: Dict[str, Any]) -> int:
 
 
 def _error_code_for_exception(exc: Exception, payload: Dict[str, Any]) -> str:
+    if isinstance(exc, ProtocolError):
+        return exc.code
     message = (payload.get("error") if payload else None) or str(exc)
     if isinstance(exc, FileNotFoundError):
         if message.startswith("Template archive not found:"):

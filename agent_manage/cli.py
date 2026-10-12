@@ -99,6 +99,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers.add_parser("codex-logout")
     subparsers.add_parser("codex-status")
 
+    for command in ("sessions-segments-history", "sessions-segments-message-get", "sessions-segments-media-get"):
+        segment = subparsers.add_parser(command)
+        segment.add_argument("--session-key", required=True)
+        segment.add_argument("--session-id", required=True)
+        segment.add_argument("--cursor")
+        if command == "sessions-segments-history":
+            segment.add_argument("--edge", choices=["start", "end"])
+            segment.add_argument("--limit", type=int, default=30)
+        elif command == "sessions-segments-message-get":
+            segment.add_argument("--message-id", required=True)
+            segment.add_argument("--ref", help="snapshot reference returned by history")
+        else:
+            segment.add_argument("--ref", required=True, help="protected media reference returned by history")
+
     add_tg_bot = subparsers.add_parser("add-tg-bot")
     add_tg_bot.add_argument("--agent", required=True)
     add_tg_bot_token = add_tg_bot.add_mutually_exclusive_group(required=True)
@@ -263,6 +277,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.command == "codex-status":
             print_json(build_success_response(client.codex_status()))
+            return 0
+        if args.command == "sessions-segments-history":
+            result = client.segment_history(args.session_key, args.session_id, edge=args.edge,
+                                            limit=args.limit, cursor=args.cursor)
+            print_json(build_success_response(result))
+            return 0
+        if args.command == "sessions-segments-message-get":
+            result = client.segment_message_get(args.session_key, args.session_id, args.message_id,
+                                                ref=args.ref, cursor=args.cursor)
+            print_json(build_success_response(result))
+            return 0
+        if args.command == "sessions-segments-media-get":
+            result = client.segment_media_get(args.session_key, args.session_id, args.ref, cursor=args.cursor)
+            print_json(build_success_response(result))
             return 0
         if args.command == "refresh-agent":
             result = client.refresh_agent(RefreshAgentRequest(

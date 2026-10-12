@@ -20,6 +20,7 @@ from .settings import normalize_image_quality, normalize_public_base_url, normal
 from .skill_management import SkillManagementMixin
 from .refresh_management import RefreshManagementMixin
 from .codex_management import CodexManagementMixin
+from .segment_management import SegmentManagementMixin
 
 
 class InstanceManagerV2(
@@ -30,6 +31,7 @@ class InstanceManagerV2(
     SkillManagementMixin,
     RefreshManagementMixin,
     CodexManagementMixin,
+    SegmentManagementMixin,
     ProvisioningMixin,
     ManagerCore,
 ):
