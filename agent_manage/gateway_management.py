@@ -54,7 +54,7 @@ class GatewayManagementMixin:
     def list_agents(self) -> Dict[str, object]:
         agents_payload = self.runner.run_json(
             [self.bin, "agents", "list", "--bindings", "--json"],
-            timeout=self.SERVER_STATUS_TIMEOUT_SECONDS,
+            timeout=self._agents_list_timeout_seconds(),
         )
         agents = [
             item
@@ -67,6 +67,17 @@ class GatewayManagementMixin:
             "agent_count": len(agents),
             "agents": agents,
         }
+
+    def _agents_list_timeout_seconds(self) -> int:
+        if not self.container_runtime:
+            return self.SERVER_STATUS_TIMEOUT_SECONDS
+        variable = "UNITAG_AGENT_MANAGER_AGENTS_LIST_TIMEOUT_SECONDS"
+        value = os.environ.get(variable)
+        if value is None:
+            return self.SERVER_STATUS_TIMEOUT_SECONDS
+        if re.fullmatch(r"(?:[1-5][0-9]|60)", value) is None:
+            raise ValueError(f"{variable} must be an ASCII integer between 10 and 60")
+        return int(value)
 
     def _extract_agent_list(self, payload: Dict[str, object]) -> List[Dict[str, object]]:
         if isinstance(payload, list):
