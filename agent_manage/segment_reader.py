@@ -23,6 +23,7 @@ from .segment_timing import count, timed
 
 PAGE_BYTES = 320 * 1024
 CHUNK_BYTES = 96 * 1024
+MEDIA_CHUNK_BYTES = 5 * 1024 * 1024
 TTL_MS = 60 * 60 * 1000
 CANONICAL = {"message", "thinking_level_change", "model_change", "compaction",
              "branch_summary", "custom", "custom_message", "label", "session_info"}
@@ -533,7 +534,8 @@ class SegmentReader:
     def chunk(self, data, offset, reference, **extra):
         if type(offset) is not int or not 0 <= offset <= len(data):
             fail("CURSOR_EXPIRED", "Invalid chunk boundary")
-        end = min(len(data), offset + CHUNK_BYTES)
+        chunk_bytes = MEDIA_CHUNK_BYTES if self.input["action"] == "media" else CHUNK_BYTES
+        end = min(len(data), offset + chunk_bytes)
         count("chunkBytes", end - offset)
         values = {"action": self.input["action"], "messageId": extra["messageId"], "offset": end}
         if self.input["action"] == "media":
