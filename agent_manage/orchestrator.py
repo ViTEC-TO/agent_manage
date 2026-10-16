@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Dict, List
 
 from .channel_management import ChannelManagementMixin
+from .activation import FlyActivationMixin
 from .gateway_management import GatewayManagementMixin
 from .manager_core import ManagerCore
 from .model_management import ModelManagementMixin
@@ -23,6 +24,7 @@ from .segment_management import SegmentManagementMixin
 
 
 class InstanceManagerV2(
+    FlyActivationMixin,
     ChannelManagementMixin,
     ModelManagementMixin,
     GatewayManagementMixin,
