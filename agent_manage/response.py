@@ -18,7 +18,8 @@ TYPE_CODE_COMMAND_FAILED = 20
 TYPE_CODE_OPERATION_ROLLED_BACK = 21
 TYPE_CODE_INTERNAL_ERROR = 50
 TYPE_CODE_OUTPUT_TOO_LARGE = 20
-MAX_PROTOCOL_RESPONSE_BYTES = 512 * 1024
+# A 5 MiB media chunk needs about 6.67 MiB after base64 plus its JSON envelope.
+MAX_PROTOCOL_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 class CliArgumentError(ValueError):
@@ -145,7 +146,7 @@ def print_json(value: object) -> None:
                     "details": {"totalUtf8Bytes": original_utf8_bytes},
                 },
                 "typeCode": TYPE_CODE_OUTPUT_TOO_LARGE,
-                "message": "AgentManager response exceeds the 512 KiB output budget",
+                "message": "AgentManager response exceeds the 8 MiB output budget",
                 "serverTimeStamp": _server_timestamp(),
                 "restartRequired": False,
                 **({"timings": timing.snapshot()} if timing is not None else {}),

@@ -284,6 +284,8 @@ agent-manage sessions-segments-media-get \
 返回格式与消息分块相同，`contentType` 为附件 MIME，`data` 为附件字节的 Base64。
 
 附件每块最多 5 MiB 原始字节（5,242,880 字节），不超过该大小的附件一次返回；更大的附件通过 `nextCursor` 续读。Base64 后单块约 6.67 MiB，Server API 和代理需允许该响应大小及 JSON 包装开销。消息正文补读仍为每块 96 KiB。已有附件游标按字节偏移续读，无需改变前端拼接协议。
+
+AgentManager 完整 JSON 响应的 UTF-8 上限为 8 MiB，包含 Base64、游标及其他包装字段；超过上限返回 `RESPONSE_OUTPUT_TOO_LARGE`。调用方的 stdout 和 HTTP 响应限制也需容纳完整响应。
 传 `--cursor <nextCursor>` 继续取后续字节；所有块完成后校验 `sha256`，前端可构造 Blob/Object URL。
 这样附件仍经过现有认证命令通道，不需要把主机文件目录公开为 HTTP 静态目录。
 引用必须来自本段已存储消息，文件仅允许位于该 Agent workspace 或当前实例 `media` 目录；拒绝符号链接和目录越界。
