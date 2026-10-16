@@ -320,6 +320,7 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
             params = reference["params"]
             part = self.manager.segment_media_get(self.key, self.ids[0], params["ref"])
             content = base64.b64decode(part["data"])
+            self.assertIsNone(part["nextCursor"])
             while part["nextCursor"]:
                 part = self.manager.segment_media_get(self.key, self.ids[0], cursor=part["nextCursor"])
                 content += base64.b64decode(part["data"])
@@ -438,10 +439,15 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
             self.manager.segment_media_get(self.key, self.ids[0], ref)
         self.assertEqual(error.exception.code, "FORBIDDEN")
         self.append(self.record("target", "assistant", "MEDIA:" + str(target), "linked"))
-        target.write_bytes(b"a" * 150000)
+        target.write_bytes(b"a" * (5 * 1024 * 1024 + 1))
         ref = self.history(limit=1)["messages"][0]["mediaRefs"][0]["params"]["ref"]
         part = self.manager.segment_media_get(self.key, self.ids[0], ref)
-        target.write_bytes(b"b" * 150000)
+        self.assertEqual(len(base64.b64decode(part["data"])), 5 * 1024 * 1024)
+        self.assertIsNotNone(part["nextCursor"])
+        last = self.manager.segment_media_get(self.key, self.ids[0], cursor=part["nextCursor"])
+        self.assertEqual(base64.b64decode(last["data"]), b"a")
+        self.assertIsNone(last["nextCursor"])
+        target.write_bytes(b"b" * (5 * 1024 * 1024 + 1))
         with self.assertRaises(ProtocolError) as error:
             self.manager.segment_media_get(self.key, self.ids[0], ref, cursor=part["nextCursor"])
         self.assertEqual(error.exception.code, "CURSOR_EXPIRED")
