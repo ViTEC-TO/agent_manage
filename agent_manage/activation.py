@@ -7,13 +7,13 @@ import errno
 import hashlib
 import os
 import stat
-import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 
 from .models import CreateInstanceRequest
+from .file_io import stage_bytes
 from .response import redact_sensitive_values
 
 
@@ -185,20 +185,7 @@ class FlyActivationMixin:
 
     @staticmethod
     def _activation_stage(path: Path, data: bytes) -> Path:
-        staged_path = None
-        try:
-            with tempfile.NamedTemporaryFile("wb", prefix=".activation-", suffix=".json",
-                                             dir=path.parent, delete=False) as handle:
-                staged_path = Path(handle.name)
-                os.chmod(staged_path, 0o600)
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            return staged_path
-        except Exception:
-            if staged_path is not None:
-                staged_path.unlink(missing_ok=True)
-            raise
+        return stage_bytes(path, data, prefix=".activation-", suffix=".json")
 
     @classmethod
     def _activation_public_paths(cls, value, stage_path: Path, config_path: Path):

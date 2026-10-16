@@ -6,12 +6,13 @@ import json
 import os
 import secrets
 import shutil
-import tempfile
 from pathlib import Path
 from time import perf_counter
 from typing import Dict, List, Optional
 
-from .local import CommandError, LocalRunner
+from .local import LocalRunner
+from .error_details import command_error_details, embedded_error_payload
+from .file_io import atomic_write_bytes, encode_json, stage_bytes
 from .settings import (
     DEFAULT_AI_SHOP,
     DEFAULT_IMAGE_QUALITY,
@@ -197,22 +198,8 @@ class ManagerCore:
                 indexed[step] = result
         return indexed
 
-    def _embedded_error_payload(self, exc: Exception) -> Dict[str, object]:
-        try:
-            payload = json.loads(str(exc))
-        except (TypeError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
-    def _error_details(self, exc: Exception) -> Dict[str, object]:
-        if isinstance(exc, CommandError):
-            return {
-                "command": exc.result.command_text,
-                "returncode": exc.result.returncode,
-                "stdout": exc.result.stdout,
-                "stderr": exc.result.stderr,
-            }
-        return {}
+    _embedded_error_payload = staticmethod(embedded_error_payload)
+    _error_details = staticmethod(command_error_details)
 
     def _command_step(self, step: str, result) -> Dict[str, object]:
         payload = self._command_result_payload(result)
@@ -251,20 +238,8 @@ class ManagerCore:
         self,
         snapshot: tuple[bytes, int],
     ) -> Dict[str, object]:
-        tmp_path: Optional[Path] = None
         try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                "wb",
-                dir=str(self.config_path.parent),
-                delete=False,
-            ) as handle:
-                tmp_path = Path(handle.name)
-                handle.write(snapshot[0])
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(tmp_path, snapshot[1])
-            tmp_path.replace(self.config_path)
+            atomic_write_bytes(self.config_path, snapshot[0], snapshot[1])
             return {
                 "step": "rollback.config.restore",
                 "result": {
@@ -277,9 +252,6 @@ class ManagerCore:
                 "step": "rollback.config.restore",
                 "error": str(exc),
             }
-        finally:
-            if tmp_path is not None and tmp_path.exists():
-                tmp_path.unlink()
 
     def _load_config(self) -> Dict[str, object]:
         self.runner.log(f"config: load {self.config_path}")
@@ -312,26 +284,13 @@ class ManagerCore:
 
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         backup_path = self.config_path.with_suffix(self.config_path.suffix + ".bak")
-        tmp_path: Optional[Path] = None
+        tmp_path = stage_bytes(self.config_path, encode_json(config))
         try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=str(self.config_path.parent),
-                delete=False,
-            ) as handle:
-                tmp_path = Path(handle.name)
-                json.dump(config, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(tmp_path, 0o600)
             if self.config_path.exists():
                 shutil.copy2(self.config_path, backup_path)
                 os.chmod(backup_path, 0o600)
             tmp_path.replace(self.config_path)
         finally:
-            if tmp_path is not None and tmp_path.exists():
-                tmp_path.unlink()
+            tmp_path.unlink(missing_ok=True)
         payload["backup_path"] = str(backup_path) if backup_path.exists() else None
         return payload

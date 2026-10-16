@@ -156,7 +156,7 @@ class ContainerImageTest(unittest.TestCase):
             runtime_config = '{"gateway": {"auth": {"token": "runtime-token"}}}\n'
             (target / "openclaw.json").write_text(runtime_config, encoding="utf-8")
 
-            with patch("agent_manage.seed.os.replace", side_effect=OSError("replace failed")):
+            with patch("agent_manage.file_io.os.replace", side_effect=OSError("replace failed")):
                 with self.assertRaisesRegex(OSError, "replace failed"):
                     initialize_openclaw_seed(seed, target)
 

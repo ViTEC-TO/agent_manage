@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 from .local import CommandError
+from .error_details import command_error_details, embedded_error_payload as _embedded_error_payload
 from .segment_timing import CURRENT
 
 TYPE_CODE_SUCCESS = 1
@@ -67,13 +68,7 @@ def build_error_response(exc: Exception) -> Dict[str, object]:
 
     details = payload.get("details") if payload else None
     if not details and isinstance(exc, CommandError):
-        details = {
-            "command": exc.result.command_text,
-            "returncode": exc.result.returncode,
-            "stdout": exc.result.stdout,
-            "stderr": exc.result.stderr,
-            "timed_out": exc.result.timed_out,
-        }
+        details = command_error_details(exc)
     if details:
         error["details"] = details
 
@@ -167,14 +162,6 @@ def print_json(value: object) -> None:
 
 def _server_timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _embedded_error_payload(exc: Exception) -> Dict[str, Any]:
-    try:
-        payload = json.loads(str(exc))
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
 
 
 def _type_code_for_exception(exc: Exception, payload: Dict[str, Any]) -> int:

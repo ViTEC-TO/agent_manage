@@ -39,7 +39,7 @@ class InstanceManagerV2(
 
     def create_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
         """Compatibility workflow: register missing agents, then configure the instance."""
-        return self._execute_instance(request, require_prebuilt_agents=False)
+        return self._execute_instance(request)
 
     def configure_instance(self, request: CreateInstanceRequest) -> Dict[str, object]:
         """Configure runtime settings for agents already supplied by the image."""
@@ -108,18 +108,9 @@ class InstanceManagerV2(
                 if container_gateway_token or existing_gateway_token is None
                 else self._preserve_gateway_auth,
             )
-            self._run_timed_step(
-                steps,
-                "config.configure_tools",
-                lambda: self._configure_config_tools(agent_names),
-            )
-            self._run_timed_step(
-                steps,
-                "workspace.configure_image_generation",
-                lambda: self._configure_workspace_defaults(
-                    workspaces, quality=image_quality, base_url=public_base_url
-                ),
-            )
+            self._configure_instance_workspace(
+                steps, agent_names, workspaces,
+                quality=image_quality, base_url=public_base_url)
             return {
                 "ok": True,
                 "mode": "configured",
@@ -174,11 +165,40 @@ class InstanceManagerV2(
             )
         )
 
+    def _rollback_agent_provisions(self, steps, provisions) -> None:
+        for item in reversed(provisions):
+            if item.get("created_workspace"):
+                self._run_timed_rollback_step(
+                    steps, lambda item=item: self._safe_purge_workspace(Path(str(item["workspace"]))))
+            if item.get("created_agent"):
+                self._run_timed_rollback_step(
+                    steps, lambda item=item: self._safe_delete_agent(str(item["agent_name"])))
+
+    def _configure_instance_workspace(self, steps, agent_names, workspaces, *, quality: str, base_url: str | None) -> None:
+        self._run_timed_step(steps, "config.configure_tools",
+                             lambda: self._configure_config_tools(agent_names))
+        self._run_timed_step(steps, "workspace.configure_image_generation",
+                             lambda: self._configure_workspace_defaults(workspaces, quality=quality, base_url=base_url))
+
+    def _provision_additional_agents(self, steps, specs, provisions, *, rollback_on_fail: bool) -> List[Dict[str, object]]:
+        agents = []
+        for spec in specs:
+            result = self._provision_agent_from_prepared_template(
+                steps=steps, template_name=str(spec["template_name"]), agent_name=str(spec["agent_name"]),
+                template_dir=Path(str(spec["template_dir"])), workspace=Path(str(spec["workspace"])),
+                model=spec["model"] if isinstance(spec.get("model"), str) else None,
+                rollback_on_fail=rollback_on_fail, step_scope=str(spec["agent_name"]),
+            )
+            provisions.append({"agent_name": spec["agent_name"], "workspace": spec["workspace"],
+                               "created_agent": result["created_agent"],
+                               "created_workspace": result["created_workspace"]})
+            agents.append({"agent_name": spec["agent_name"], "template_name": spec["template_name"],
+                           "source": spec["source"], "workspace": str(spec["workspace"]), "model": spec.get("model")})
+        return agents
+
     def _execute_instance(
         self,
         request: CreateInstanceRequest,
-        *,
-        require_prebuilt_agents: bool,
     ) -> Dict[str, object]:
         execution_started_at = perf_counter()
         steps: List[Dict[str, object]] = []
@@ -187,7 +207,6 @@ class InstanceManagerV2(
                 request,
                 execution_started_at,
                 steps,
-                require_prebuilt_agents=require_prebuilt_agents,
             )
 
         try:
@@ -231,7 +250,6 @@ class InstanceManagerV2(
                 model=request.model,
                 rollback_on_fail=request.rollback_on_fail,
                 step_scope=None,
-                require_existing_agent=require_prebuilt_agents,
             )
             created_agent = bool(provision_result["created_agent"])
             created_template_dir = bool(provision_result["created_template_dir"])
@@ -257,36 +275,8 @@ class InstanceManagerV2(
                     fallback_model=request.model,
                 ),
             )
-            additional_agents: List[Dict[str, object]] = []
-            for spec in additional_specs:
-                spec_result = self._provision_agent_from_prepared_template(
-                    steps=steps,
-                    template_name=str(spec["template_name"]),
-                    agent_name=str(spec["agent_name"]),
-                    template_dir=Path(str(spec["template_dir"])),
-                    workspace=Path(str(spec["workspace"])),
-                    model=spec["model"] if isinstance(spec.get("model"), str) else None,
-                    rollback_on_fail=request.rollback_on_fail,
-                    step_scope=str(spec["agent_name"]),
-                    require_existing_agent=require_prebuilt_agents,
-                )
-                additional_provisions.append(
-                    {
-                        "agent_name": spec["agent_name"],
-                        "workspace": spec["workspace"],
-                        "created_agent": spec_result["created_agent"],
-                        "created_workspace": spec_result["created_workspace"],
-                    }
-                )
-                additional_agents.append(
-                    {
-                        "agent_name": spec["agent_name"],
-                        "template_name": spec["template_name"],
-                        "source": spec["source"],
-                        "workspace": str(spec["workspace"]),
-                        "model": spec.get("model"),
-                    }
-                )
+            additional_agents = self._provision_additional_agents(
+                steps, additional_specs, additional_provisions, rollback_on_fail=request.rollback_on_fail)
 
             fetched_models = self._run_timed_step(
                 steps,
@@ -339,31 +329,14 @@ class InstanceManagerV2(
                     lambda: self._configure_gateway_auth(gateway_token),
                 )
 
-            self._run_timed_step(
-                steps,
-                "config.configure_tools",
-                lambda: self._configure_config_tools(
-                    [agent_name, *[str(item["agent_name"]) for item in additional_agents]]
-                ),
-            )
-
-            self._run_timed_step(
-                steps,
-                "workspace.configure_image_generation",
-                lambda: self._configure_workspace_defaults(
-                    [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
-                    quality=image_quality,
-                    base_url=public_base_url,
-                ),
-            )
+            self._configure_instance_workspace(
+                steps, [agent_name, *[str(item["agent_name"]) for item in additional_agents]],
+                [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
+                quality=image_quality, base_url=public_base_url)
 
             return {
                 "ok": True,
-                "mode": (
-                    "configured"
-                    if require_prebuilt_agents
-                    else ("reconciled" if reconcile_existing else "created")
-                ),
+                "mode": "reconciled" if reconcile_existing else "created",
                 "template_name": request.template_name,
                 "agent_name": agent_name,
                 "additional_agents": additional_agents,
@@ -388,16 +361,11 @@ class InstanceManagerV2(
                 raise RuntimeError(json.dumps(payload, ensure_ascii=False)) from exc
             rollback_steps: List[Dict[str, object]] = []
             if request.rollback_on_fail:
-                for item in reversed(additional_provisions):
-                    item_workspace = Path(str(item["workspace"]))
-                    if item.get("created_workspace"):
-                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(item_workspace))
-                    if item.get("created_agent"):
-                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(str(item["agent_name"])))
-                if created_workspace:
-                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(workspace))
-                if created_agent:
-                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(agent_name))
+                self._rollback_agent_provisions(rollback_steps, [
+                    {"agent_name": agent_name, "workspace": workspace,
+                     "created_agent": created_agent, "created_workspace": created_workspace},
+                    *additional_provisions,
+                ])
                 if created_template_dir and template_dir.exists():
                     self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_template_dir(template_dir))
                 if config_snapshot is not None:
@@ -411,8 +379,6 @@ class InstanceManagerV2(
         request: CreateInstanceRequest,
         execution_started_at: float,
         steps: List[Dict[str, object]],
-        *,
-        require_prebuilt_agents: bool,
     ) -> Dict[str, object]:
         try:
             self._run_timed_step(
@@ -456,7 +422,6 @@ class InstanceManagerV2(
                 model=request.model,
                 rollback_on_fail=request.rollback_on_fail,
                 step_scope=None,
-                require_existing_agent=require_prebuilt_agents,
             )
             created_agent = bool(provision_result["created_agent"])
             created_template_dir = bool(provision_result["created_template_dir"])
@@ -473,36 +438,8 @@ class InstanceManagerV2(
                     fallback_model=request.model,
                 ),
             )
-            additional_agents: List[Dict[str, object]] = []
-            for spec in additional_specs:
-                spec_result = self._provision_agent_from_prepared_template(
-                    steps=steps,
-                    template_name=str(spec["template_name"]),
-                    agent_name=str(spec["agent_name"]),
-                    template_dir=Path(str(spec["template_dir"])),
-                    workspace=Path(str(spec["workspace"])),
-                    model=spec["model"] if isinstance(spec.get("model"), str) else None,
-                    rollback_on_fail=request.rollback_on_fail,
-                    step_scope=str(spec["agent_name"]),
-                    require_existing_agent=require_prebuilt_agents,
-                )
-                additional_provisions.append(
-                    {
-                        "agent_name": spec["agent_name"],
-                        "workspace": spec["workspace"],
-                        "created_agent": spec_result["created_agent"],
-                        "created_workspace": spec_result["created_workspace"],
-                    }
-                )
-                additional_agents.append(
-                    {
-                        "agent_name": spec["agent_name"],
-                        "template_name": spec["template_name"],
-                        "source": spec["source"],
-                        "workspace": str(spec["workspace"]),
-                        "model": spec.get("model"),
-                    }
-                )
+            additional_agents = self._provision_additional_agents(
+                steps, additional_specs, additional_provisions, rollback_on_fail=request.rollback_on_fail)
 
             fetched_models = self._run_timed_step(
                 steps,
@@ -535,23 +472,10 @@ class InstanceManagerV2(
                 self._preserve_gateway_auth,
             )
 
-            self._run_timed_step(
-                steps,
-                "config.configure_tools",
-                lambda: self._configure_config_tools(
-                    [agent_name, *[str(item["agent_name"]) for item in additional_agents]]
-                ),
-            )
-
-            self._run_timed_step(
-                steps,
-                "workspace.configure_image_generation",
-                lambda: self._configure_workspace_defaults(
-                    [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
-                    quality=image_quality,
-                    base_url=public_base_url,
-                ),
-            )
+            self._configure_instance_workspace(
+                steps, [agent_name, *[str(item["agent_name"]) for item in additional_agents]],
+                [workspace, *[Path(str(item["workspace"])) for item in additional_agents]],
+                quality=image_quality, base_url=public_base_url)
 
             return {
                 "ok": True,
@@ -581,16 +505,11 @@ class InstanceManagerV2(
                 raise RuntimeError(json.dumps(payload, ensure_ascii=False)) from exc
             rollback_steps: List[Dict[str, object]] = []
             if request.rollback_on_fail:
-                for item in reversed(additional_provisions):
-                    item_workspace = Path(str(item["workspace"]))
-                    if item.get("created_workspace"):
-                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(item_workspace))
-                    if item.get("created_agent"):
-                        self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(str(item["agent_name"])))
-                if created_workspace:
-                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_workspace(workspace))
-                if created_agent:
-                    self._run_timed_rollback_step(rollback_steps, lambda: self._safe_delete_agent(agent_name))
+                self._rollback_agent_provisions(rollback_steps, [
+                    {"agent_name": agent_name, "workspace": workspace,
+                     "created_agent": created_agent, "created_workspace": created_workspace},
+                    *additional_provisions,
+                ])
                 if created_template_dir and template_dir.exists():
                     self._run_timed_rollback_step(rollback_steps, lambda: self._safe_purge_template_dir(template_dir))
                 if config_snapshot is not None:
