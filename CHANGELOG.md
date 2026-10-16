@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-10-16
+
+- 新增 Fly 容器的 `activate-instance` 配置发布流程，提供原子写入、锁定和激活确认所需的配置哈希。
+- 容器模式的 `agents-list` 支持受限的独立超时配置；其他命令和非容器模式保持原有超时。
+- 增加只读会话分段历史与媒体读取能力，并将媒体分段上限调整为 5 MiB。
 - 预制镜像 seed 支持与非空运行目录深度合并，保留 DockerManager 运行时配置，并通过 marker 保持幂等和中断恢复。
 - seed 默认写入无秘密的 `gateway.mode=local` 与 token auth 模式，使 Gateway 可在运行时 Token 环境变量下直接启动。
 - 镜像布局协议升级到 v2；构建脚本接受任意模板 zip，并强制执行真实 Gateway readiness、Agent、配置合并、Token 不落盘和 labels 验证。
