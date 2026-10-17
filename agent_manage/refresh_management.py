@@ -17,6 +17,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .skill_permissions import prepare_shared_skill_path
 from .models import RefreshAgentRequest
 from .file_io import atomic_write_bytes as _atomic_bytes, write_private_json as _private_json
 from .template_safety import validate_safe_name, validate_template_archive
@@ -115,6 +116,31 @@ class RefreshManagementMixin:
                                            "OPENCLAW_STATE_DIR": str(self.config_path.parent)})
             if request.restart:
                 self._assert_refresh_gateway_scope()
+            # Repair only managed shared-file parent directories, including on
+            # otherwise no-op refreshes. Permission repair is durable maintenance;
+            # content rollback must not make these directories read-only again.
+            if new_state is not None:
+                shared_root = self.config_path.parent / "skills"
+                directories = set()
+                for key in new_state["files"]:
+                    if not key.startswith("common/"):
+                        continue
+                    target = _safe_target(shared_root, key.split("/", 1)[1])
+                    parent = target.parent
+                    while parent.is_relative_to(shared_root):
+                        directories.add(parent)
+                        parent = parent.parent
+                for directory in sorted(directories, key=lambda path: len(path.parts)):
+                    prepare_shared_skill_path(directory, self.config_path.parent, recursive=False)
+            # Atomic replacement needs directory write/search access, not just
+            # a writable destination file. Reject before changing any files.
+            for item in plan:
+                parent = item["target"].parent
+                while not parent.exists():
+                    parent = parent.parent
+                if not os.access(parent, os.W_OK | os.X_OK):
+                    raise PermissionError(f"Refresh directory is not writable: {parent}; "
+                                          f"execution uid={os.geteuid()}")
             self._verify_refresh_unchanged(plan, original_config)
             metadata_changed = new_state is not None and any(
                 new_state.get(key) != previous.get(key)
@@ -155,6 +181,13 @@ class RefreshManagementMixin:
                             parent = parent.parent
                         created_dirs.extend(missing)
                         _atomic_bytes(target, item["source"].read_bytes(), item["after"]["mode"])
+                        if item["root"] == self.config_path.parent / "skills":
+                            # Atomic writes may create directories as an admin;
+                            # keep newly created paths owned by the runtime too.
+                            parent = target
+                            while parent.is_relative_to(item["root"]):
+                                prepare_shared_skill_path(parent, self.config_path.parent, recursive=False)
+                                parent = parent.parent
                 if candidate != config:
                     if self.config_path.read_bytes() != original_config:
                         raise RuntimeError("Config changed during refresh; retry")
@@ -188,12 +221,16 @@ class RefreshManagementMixin:
                 for item in reversed(attempted):
                     try:
                         current = _fingerprint(item["target"])
+                        if current == item["before"]:
+                            continue
                         if current != item["after"] and current != item["before"]:
                             raise RuntimeError("File changed independently; retain it and report rollback conflict")
                         if item["before"] is None:
                             item["target"].unlink(missing_ok=True)
                         else:
                             _atomic_bytes(item["target"], (backup / item["backup_file"]).read_bytes(), item["before"]["mode"])
+                            if item["root"] == self.config_path.parent / "skills":
+                                prepare_shared_skill_path(item["target"], self.config_path.parent, recursive=False)
                     except Exception:
                         errors.append(str(item["target"]))
                 for directory in created_dirs:
@@ -348,6 +385,10 @@ class RefreshManagementMixin:
         for index, (key, item) in enumerate(candidates.items()):
             frozen = managed / str(index)
             shutil.copy2(item, frozen)
+            if key.startswith("common/"):
+                # Release bundles may be immutable (444/555); runtime copies
+                # must remain writable without losing script executable bits.
+                frozen.chmod(stat.S_IMODE(frozen.stat().st_mode) | 0o600)
             if key == "workspace/AGENTS.md":
                 current = workspace / "AGENTS.md"
                 if current.is_file() and not current.is_symlink():

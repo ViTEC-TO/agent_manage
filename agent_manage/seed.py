@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from .file_io import atomic_write_bytes
+from .skill_permissions import prepare_shared_skill_path
 
 
 INITIALIZING_MARKER = ".unitag-seed-initializing"
@@ -101,10 +102,14 @@ def initialize_openclaw_seed(seed_dir: Path, target_dir: Path) -> dict[str, obje
             if source.name == "openclaw.json":
                 continue
             destination = target_dir / source.name
+            if source.name == "skills":
+                prepare_shared_skill_path(destination, target_dir)
             if source.is_dir():
                 shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
             else:
                 shutil.copy2(source, destination)
+            if source.name == "skills":
+                prepare_shared_skill_path(destination, target_dir)
             copied.append(source.name)
         runtime_config_path = target_dir / "openclaw.json"
         _atomic_write_runtime_config(

@@ -389,6 +389,34 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertEqual(self.state(), old_state)
         self.assertFalse((self.workspace / "A").exists())
 
+    def test_directory_permission_failure_is_detected_before_writes(self):
+        with patch("agent_manage.refresh_management.os.access", return_value=False):
+            with self.assertRaisesRegex(PermissionError, "Refresh directory is not writable"):
+                self.manager.refresh_agent(self.request())
+        self.assertFalse((self.workspace / "SOUL.md").exists())
+        self.assertEqual(list((self.config_path.parent / "agent-manage/backups").iterdir()), [])
+
+    def test_failed_temp_creation_does_not_rewrite_unchanged_file_on_rollback(self):
+        self.manager.refresh_agent(self.request())
+        self.write_source("SOUL.md", "changed")
+        from agent_manage.file_io import atomic_write_bytes
+        failed = []
+
+        def write_or_fail(path, *args, **kwargs):
+            if path == self.workspace / "SOUL.md":
+                failed.append(path)
+                raise PermissionError("temp denied")
+            return atomic_write_bytes(path, *args, **kwargs)
+
+        with patch("agent_manage.refresh_management._atomic_bytes", side_effect=write_or_fail):
+            with self.assertRaises(RuntimeError) as caught:
+                self.manager.refresh_agent(self.request())
+        self.assertEqual(failed, [self.workspace / "SOUL.md"])
+        error = json.loads(str(caught.exception))
+        self.assertTrue(error["rollback"]["ok"])
+        self.assertEqual(error["details"]["rollback_errors"], [])
+        self.assertEqual((self.workspace / "SOUL.md").read_text(), "version one\n")
+
     def test_failed_health_restores_config_files_state_and_old_runtime(self):
         before = self.config_path.read_bytes()
         self.runner.fail_health_once = True
@@ -484,6 +512,61 @@ class RefreshManagementTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.manager.refresh_agent(RefreshAgentRequest("demo", agent_zip=str(archive_path), template_only=True))
         self.assertFalse((self.root / "escape").exists())
+
+    def test_readonly_shared_release_and_existing_install_are_repaired(self):
+        self.write_source("common-skills/weather/SKILL.md", "new")
+        self.write_source("common-skills/weather/scripts/run.sh", "#!/bin/sh\n")
+        source = self.source / "common-skills/weather"
+        shared = self.config_path.parent / "skills/weather"
+        (shared / "scripts").mkdir(parents=True)
+        (shared / "SKILL.md").write_text("old")
+        (shared / "extra.txt").write_text("user extra")
+        (shared / "extra.txt").chmod(0o400)
+        for directory in (source, source / "scripts", shared, shared / "scripts", shared.parent):
+            directory.chmod(0o555)
+            self.addCleanup(directory.chmod, 0o755)
+        (source / "SKILL.md").chmod(0o444)
+        (source / "scripts/run.sh").chmod(0o555)
+        (shared / "SKILL.md").chmod(0o444)
+        self.runner.dry_run = True
+        self.manager.refresh_agent(self.request())
+        self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o555)
+        self.assertEqual(stat.S_IMODE((shared / "SKILL.md").stat().st_mode), 0o444)
+        self.runner.dry_run = False
+        result = self.manager.refresh_agent(self.request())
+        self.assertEqual((shared / "SKILL.md").read_text(), "new")
+        self.assertEqual(stat.S_IMODE((shared / "SKILL.md").stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE((shared / "scripts/run.sh").stat().st_mode), 0o755)
+        for directory in (shared.parent, shared, shared / "scripts"):
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o755)
+            with tempfile.NamedTemporaryFile(dir=directory):
+                pass
+        self.assertEqual(stat.S_IMODE((shared / "extra.txt").stat().st_mode), 0o400)
+        self.assertEqual((shared / "extra.txt").read_text(), "user extra")
+        self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o555)
+        self.assertEqual(stat.S_IMODE((source / "SKILL.md").stat().st_mode), 0o444)
+        manifest = json.loads((Path(result["backup_path"]) / "manifest.json").read_text())
+        entry = next(item for item in manifest["files"] if item["path"] == str(shared / "SKILL.md"))
+        self.assertEqual((Path(result["backup_path"]) / entry["backup_file"]).read_text(), "old")
+        shared.chmod(0o555)
+        self.assertIsNone(self.manager.refresh_agent(self.request())["backup_path"])
+        self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o755)
+
+    def test_readonly_shared_refresh_rollback_restores_content_but_keeps_writable(self):
+        self.write_source("common-skills/weather/SKILL.md", "new")
+        shared = self.config_path.parent / "skills/weather"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text("old")
+        (shared / "SKILL.md").chmod(0o444)
+        shared.chmod(0o555)
+        self.addCleanup(shared.chmod, 0o755)
+        self.runner.fail_health_once = True
+        with self.assertRaises(RuntimeError) as caught:
+            self.manager.refresh_agent(self.request(restart=True))
+        self.assertTrue(json.loads(str(caught.exception))["rollback"]["ok"])
+        self.assertEqual((shared / "SKILL.md").read_text(), "old")
+        self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((shared / "SKILL.md").stat().st_mode), 0o644)
 
     def test_shared_skills_are_scoped_and_user_extras_are_preserved(self):
         self.write_source("common-skills/weather/SKILL.md", "one")

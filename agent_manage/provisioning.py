@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from .local import CommandError
 from .models import AddAgentRequest, CreateInstanceRequest
 from .settings import normalize_image_quality
+from .skill_permissions import prepare_shared_skill_path
 from .template_safety import (
     require_path_within,
     validate_safe_name,
@@ -564,12 +565,15 @@ class ProvisioningMixin:
                 "skills": [source.name for source in sources],
             }
         target_root.mkdir(parents=True, exist_ok=True)
+        prepare_shared_skill_path(target_root, self.config_path.parent, recursive=False)
         installed = []
         for source in sources:
             if not source.is_dir():
                 raise FileNotFoundError(f"Common skill folder not found: {source}")
             destination = target_root / source.name
+            prepare_shared_skill_path(destination, self.config_path.parent)
             shutil.copytree(source, destination, dirs_exist_ok=True)
+            prepare_shared_skill_path(destination, self.config_path.parent)
             installed.append(
                 {
                     "name": source.name,

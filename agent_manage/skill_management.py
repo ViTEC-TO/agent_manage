@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict
 
 from .models import AddSkillRequest
+from .skill_permissions import prepare_shared_skill_path
 from .template_safety import validate_safe_name, validate_template_archive
 
 
@@ -146,12 +147,18 @@ class SkillManagementMixin:
         # Stage the full directory before swapping it, so failed copies cannot
         # corrupt an existing Skill and replacement removes stale files.
         target_root.mkdir(parents=True, exist_ok=True)
+        if request.common:
+            prepare_shared_skill_path(target_root, self.config_path.parent, recursive=False)
         staging = Path(tempfile.mkdtemp(prefix=f".{name}.install-", dir=str(target_root)))
         backup = staging / "previous"
         try:
             staged_skill = staging / "skill"
             shutil.copytree(source, staged_skill)
+            if request.common:
+                prepare_shared_skill_path(staged_skill, self.config_path.parent)
             if existed:
+                if request.common:
+                    prepare_shared_skill_path(destination, self.config_path.parent)
                 destination.replace(backup)
             try:
                 staged_skill.replace(destination)
@@ -160,6 +167,8 @@ class SkillManagementMixin:
                     backup.replace(destination)
                 raise
             if backup.exists():
+                if request.common:
+                    prepare_shared_skill_path(backup, self.config_path.parent)
                 shutil.rmtree(backup)
         finally:
             if backup.exists():

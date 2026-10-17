@@ -12,6 +12,26 @@ from agent_manage.seed import (
 
 
 class ContainerImageTest(unittest.TestCase):
+    def test_seed_shared_skill_permissions_allow_later_updates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = root / "seed"
+            skill = seed / "skills/nginx-delivery"
+            skill.mkdir(parents=True)
+            (seed / "openclaw.json").write_text("{}")
+            (skill / "SKILL.md").write_text("instructions")
+            (skill / "SKILL.md").chmod(0o444)
+            skill.chmod(0o555)
+            try:
+                initialize_openclaw_seed(seed, root / "target")
+                installed = root / "target/skills/nginx-delivery"
+                with tempfile.NamedTemporaryFile(dir=installed):
+                    pass
+                (installed / "SKILL.md").write_text("updated")
+                self.assertEqual(skill.stat().st_mode & 0o777, 0o555)
+            finally:
+                skill.chmod(0o755)
+
     def test_nonempty_runtime_config_is_merged_over_prebuilt_seed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

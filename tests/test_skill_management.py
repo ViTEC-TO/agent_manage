@@ -60,6 +60,40 @@ class SkillManagementTest(unittest.TestCase):
         self.assertEqual(self.config_path.read_bytes(), self.config_before)
         self.assertTrue((self.source / "SKILL.md").is_file())
 
+    def test_readonly_shared_skill_install_remains_updatable(self):
+        self.source.chmod(0o555)
+        (self.source / "SKILL.md").chmod(0o444)
+        self.addCleanup(self.source.chmod, 0o755)
+        for install in (
+            lambda: self.manager.add_skill(AddSkillRequest(common=True, skill_dir=str(self.source))),
+            lambda: self.manager._install_common_skills([self.source]),
+        ):
+            install()
+            destination = self.config_path.parent / "skills/weather"
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((destination / "SKILL.md").stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((destination / "scripts/run.sh").stat().st_mode), 0o755)
+            self.assertEqual(destination.stat().st_uid, self.config_path.parent.stat().st_uid)
+            with tempfile.NamedTemporaryFile(dir=destination):
+                pass
+            # Simulate an installation left by the previous release before
+            # testing the provisioning merge path on the next iteration.
+            destination.chmod(0o555)
+            (destination / "SKILL.md").chmod(0o444)
+        self.manager._install_common_skills([self.source])
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(self.source.stat().st_mode), 0o555)
+
+    def test_replace_legacy_readonly_shared_skill(self):
+        self.manager.add_skill(AddSkillRequest(common=True, skill_dir=str(self.source)))
+        destination = self.config_path.parent / "skills/weather"
+        (destination / "SKILL.md").chmod(0o444)
+        (destination / "scripts").chmod(0o555)
+        destination.chmod(0o555)
+        self.manager.add_skill(AddSkillRequest(common=True, skill_dir=str(self.source), replace=True))
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o755)
+        self.assertFalse(list(destination.parent.glob(".*.install-*")))
+
     def test_existing_skill_requires_replace_and_replacement_removes_stale_files(self):
         request = AddSkillRequest(common=True, skill_dir=str(self.source))
         self.manager.add_skill(request)
