@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `refresh-agent` 同步内置共享 Skill，新增和覆盖同名文件；所有共享 Skill 保留目标目录多余文件，更新纳入原有备份与回滚，`--models-only` 不同步 Skill。
+
 - nginx-delivery 适配不同主机的服务、配置和公开目录，静态发布按需验证配置，并补充公开页面分享海报要求。
 
 - 历史向前读取先取够 limit 条，批内没有用户消息时才继续补读至用户消息，并返回 `reachedUser`；保留 1 MiB 预算及单条预览，向后读取仍按条数分页。

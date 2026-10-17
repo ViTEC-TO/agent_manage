@@ -467,10 +467,58 @@ class RefreshManagementTest(unittest.TestCase):
         (self.source / "common-skills/weather/stale.txt").unlink()
         result = self.manager.refresh_agent(self.request())
         self.assertEqual((shared / "SKILL.md").read_text(), "two")
-        self.assertFalse((shared / "stale.txt").exists())
+        self.assertEqual((shared / "stale.txt").read_text(), "stale")
         self.assertEqual((shared / "custom.txt").read_text(), "custom")
         self.assertFalse((self.workspace / "common-skills").exists())
         self.assertEqual(result["template"]["common_skills_scope"], "environment")
+
+    def test_builtin_shared_skills_merge_backup_and_noop(self):
+        builtin = self.root / "builtin/nginx-delivery"
+        builtin.mkdir(parents=True)
+        (builtin / "SKILL.md").write_text("new builtin")
+        (builtin / "new.txt").write_text("new file")
+        shared = self.config_path.parent / "skills/nginx-delivery"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text("old installed")
+        (shared / "extra.txt").write_text("keep")
+        self.write_source("common-skills/nginx-delivery/SKILL.md", "template version")
+        with patch.object(self.manager, "_builtin_common_skill_sources", return_value=[builtin]):
+            self.runner.dry_run = True
+            preview = self.manager.refresh_agent(self.request())
+            self.assertIn({"path": str(shared / "new.txt"), "action": "add"}, preview["changed_files"])
+            self.assertEqual((shared / "SKILL.md").read_text(), "old installed")
+            self.assertFalse((shared / "new.txt").exists())
+            self.runner.dry_run = False
+            result = self.manager.refresh_agent(self.request())
+            self.assertEqual((shared / "SKILL.md").read_text(), "new builtin")
+            self.assertEqual((shared / "new.txt").read_text(), "new file")
+            self.assertEqual((shared / "extra.txt").read_text(), "keep")
+            backup = Path(result["backup_path"])
+            manifest = json.loads((backup / "manifest.json").read_text())
+            entry = next(item for item in manifest["files"] if item["path"] == str(shared / "SKILL.md"))
+            self.assertEqual((backup / entry["backup_file"]).read_text(), "old installed")
+            self.assertIsNone(self.manager.refresh_agent(self.request())["backup_path"])
+            (builtin / "new.txt").unlink()
+            self.manager.refresh_agent(self.request())
+            self.assertEqual((shared / "new.txt").read_text(), "new file")
+
+    def test_builtin_shared_skills_roll_back_and_models_only_skips_them(self):
+        builtin = self.root / "builtin/shared"
+        builtin.mkdir(parents=True)
+        (builtin / "SKILL.md").write_text("new")
+        (builtin / "added.txt").write_text("added")
+        shared = self.config_path.parent / "skills/shared"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text("old")
+        with patch.object(self.manager, "_builtin_common_skill_sources", return_value=[builtin]) as sources:
+            self.manager.refresh_agent(RefreshAgentRequest("demo", models_only=True))
+            sources.assert_not_called()
+            self.assertEqual((shared / "SKILL.md").read_text(), "old")
+            self.runner.fail_health_once = True
+            with self.assertRaises(RuntimeError):
+                self.manager.refresh_agent(self.request(restart=True))
+            self.assertEqual((shared / "SKILL.md").read_text(), "old")
+            self.assertFalse((shared / "added.txt").exists())
 
     def test_public_and_private_skill_updates_preserve_protected_data_and_roll_back(self):
         for prefix in ("skills/private", "common-skills/shared"):

@@ -325,15 +325,20 @@ class RefreshManagementMixin:
             if any(relative.is_relative_to(path) for path in common_paths) or relative.parts[0] == "common-skills":
                 continue
             candidates[f"workspace/{relative.as_posix()}"] = item
-        for skill in common:
-            if not skill.is_dir() or not (skill / "SKILL.md").is_file():
+        # Built-ins take precedence, as in provisioning; merge shared files
+        # without removing files that no longer appear in either source.
+        builtin_common = self._builtin_common_skill_sources()
+        for skill in [*common, *builtin_common]:
+            if skill.is_symlink() or not skill.is_dir() or not (skill / "SKILL.md").is_file():
                 raise ValueError(f"Common skill must contain SKILL.md: {skill}")
             skill_name = validate_safe_name(skill.name, "skill_name")
             for item in sorted(skill.rglob("*")):
+                if item.is_symlink() or not (item.is_dir() or item.is_file()):
+                    raise ValueError(f"Skill links and special files are not allowed: {item}")
                 relative = Path(skill_name) / item.relative_to(skill)
                 if item.is_file() and not _protected(relative):
                     key = f"common/{relative.as_posix()}"
-                    if key in candidates:
+                    if key in candidates and skill not in builtin_common:
                         raise ValueError(f"Duplicate common skill target: {key}")
                     candidates[key] = item
         # Freeze source bytes before applying: callers may replace template caches.
@@ -361,6 +366,8 @@ class RefreshManagementMixin:
                 continue
             target = _safe_target(roots[scope], relative)
             before, after, old = _fingerprint(target), files.get(key), old_files.get(key)
+            if scope == "common" and after is None:
+                continue
             if before == after:
                 continue
             # Skills are template capabilities: refresh them even without an old
