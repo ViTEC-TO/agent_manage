@@ -689,7 +689,8 @@ class ProvisioningMixin:
             else self.VPS_PUBLIC_DELIVERY_ROOT
         )
         public_url_rules = [
-            f"- This runtime's public file root is `{public_delivery_root}/`."
+            f"- This runtime's declared public file root is `{public_delivery_root}/`; "
+            "verify its active URL mapping before publishing."
         ]
         if base_url:
             public_url_rules.extend(

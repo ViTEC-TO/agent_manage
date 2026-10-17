@@ -6,10 +6,11 @@ description: Deploy explicitly public user-facing files, HTML pages, previews, a
 # Nginx Delivery
 
 1. Confirm the files are intended to be public. Never publish secrets, credentials, private configuration, source archives, or logs without explicit review.
-2. Ensure `PATH` includes `/usr/local/sbin:/usr/sbin:/sbin`. Check nginx through the package manager, service state, or an absolute binary path; do not rely only on `command -v`.
-3. If nginx is missing, install it with the host package manager when system installation is authorized; otherwise report the blocker. Do not run it as a foreground service.
+2. Ensure `PATH` includes `/usr/local/sbin:/usr/sbin:/sbin`. Inspect the running nginx process, listening ports, and active config; do not assume systemd, default ports, or a default config path.
+3. Reuse existing nginx. Only install it when truly missing, system installation is authorized, and no service conflicts exist. Use the existing service manager or supervisor; do not start a foreground service in the task terminal.
 4. Name files with lowercase URL-safe English words and hyphens: `<topic>-<content>.<ext>`. Add `-preview` before the extension for previews.
-5. Use the public root declared in the workspace runtime rules. Container instances use `/home/node/.openclaw/workspace/public/`; VPS instances use `/var/www/html/`.
-6. Deploy only the required files under that public root and update its `index.html` without discarding existing entries. Preserve unrelated files and avoid overwriting an existing deliverable unless updating it is intended.
-7. Validate nginx configuration, service state, listening port, the deployed file, and relevant logs. Run network checks separately with bounded timeouts and IPv4, for example `curl -4 --max-time 5`.
-8. Return the verified public URL reachable over IPv4 for every delivered file. Prefer HTTPS when configured; otherwise return the actual HTTP URL. Never return a local path, IPv6 URL, or invented URL as the delivery result.
+5. Verify the runtime-declared public root against the active config for the target URL; resolve mismatches before publishing. `/home/node/.openclaw/workspace/public/` and `/var/www/html/` are defaults, not guaranteed active roots.
+6. Deploy only the required files under that public root and update its `index.html` without discarding existing entries. Preserve unrelated files and avoid overwriting an existing deliverable unless updating it is intended. Ensure nginx worker access (typically files 644, directories 755). Compress web images; target ≤500 KB each unless needed otherwise.
+7. A new public page also ships a 1200×630 share poster (≤300 KB), properly typeset—not AI-drawn Chinese or a page screenshot—and wired to `og:image` and `twitter:card=summary_large_image`. Use page-specific assets to avoid collisions. Standalone assets and private pages skip this.
+8. Static deployment normally needs no config change or reload. Verify the process, actual port, deployed file, HTTP status, content type, and relevant logs. Only after config changes, test with the actual binary, user, and `-p`/`-c` arguments. Run network checks separately with bounded timeouts and IPv4, for example `curl -4 --max-time 5`.
+9. Return the verified public URL reachable over IPv4 for every delivered file. Prefer HTTPS when configured; otherwise return the actual HTTP URL. Never return a local path, IPv6 URL, or invented URL as the delivery result.
