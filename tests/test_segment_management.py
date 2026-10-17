@@ -156,6 +156,50 @@ class DirectSegmentReaderTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "CURSOR_EXPIRED")
         self.assertIn("private thought", self.file.read_text())
 
+    def test_filtered_pages_fill_limit_in_both_directions(self):
+        rows = []
+        for i in range(12):
+            content = [{"type": "text", "text": str(i)}] if i % 3 == 1 else [{"type": "thinking", "thinking": "hidden"}]
+            rows.append({"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                         "message": {"role": "assistant", "content": content}})
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        for view in ("compact", "full"):
+            for edge, cursor_key, expected in (("start", "newerCursor", [["1", "4"], ["7", "10"]]),
+                                               ("end", "olderCursor", [["7", "10"], ["1", "4"]])):
+                with self.subTest(view=view, edge=edge):
+                    request = {**self.request, "view": view, "omitThinking": True, "limit": 2, "edge": edge}
+                    page = read_segment(request, os.environ)
+                    self.assertEqual([m["id"] for m in page["messages"]], expected[0])
+                    page = read_segment({**self.request, "limit": 2, "cursor": page[cursor_key]}, os.environ)
+                    self.assertEqual([m["id"] for m in page["messages"]], expected[1])
+                    if page[cursor_key]:
+                        last = read_segment({**self.request, "limit": 2, "cursor": page[cursor_key]}, os.environ)
+                        self.assertEqual(last["messages"], [])
+                        self.assertIsNone(last[cursor_key])
+        normal = read_segment({**self.request, "limit": 12}, os.environ)
+        self.assertEqual(len(normal["messages"]), 12)
+
+    def test_filtered_empty_segment_and_tool_media_records(self):
+        messages = [
+            {"role": "assistant", "content": [{"type": "thinking", "thinking": "hidden"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": " "}]},
+            {"role": "assistant", "content": [{"type": "toolCall", "id": "c", "name": "exec", "arguments": {"command": "pwd"}}]},
+            {"role": "toolResult", "toolCallId": "c", "isError": False, "content": [{"type": "text", "text": "output"}]},
+            {"role": "assistant", "content": [{"type": "image", "mimeType": "image/png", "data": base64.b64encode(b"image").decode()}]},
+        ]
+        rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None, "message": message}
+                for i, message in enumerate(messages)]
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        page = read_segment({**self.request, "omitThinking": True, "limit": 3}, os.environ)
+        self.assertEqual([m["id"] for m in page["messages"]], ["2", "3", "4"])
+        self.assertIn("toolSummary", page["messages"][1])
+        self.assertIn("mediaRefs", page["messages"][2])
+        self.file.write_text(json.dumps(rows[0]) + "\n")
+        page = read_segment({**self.request, "omitThinking": True}, os.environ)
+        self.assertEqual(page["messages"], [])
+        self.assertIsNone(page["olderCursor"])
+        self.assertIsNone(page["newerCursor"])
+
     def test_omit_thinking_preserves_answer_tools_and_default(self):
         content = [{"type": "thinking", "thinking": "thought"},
                    {"type": "text", "text": "answer"},

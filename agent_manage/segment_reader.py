@@ -630,6 +630,14 @@ class SegmentReader:
             while len(messages) < self.input["limit"] and (stop < len(self.rows) if forward else start > 0):
                 row = self.rows[stop if forward else start - 1]
                 message = self.materialize(row, view=view, omit_thinking=omit_thinking)
+                if (omit_thinking or view == "compact") and not has_display_content(message):
+                    # Advance the physical boundary even when filtering removes a row.
+                    # The page limit counts returned messages, not scanned records.
+                    if forward:
+                        stop += 1
+                    else:
+                        start -= 1
+                    continue
                 count = len(dumps(message, pretty=True).encode())
                 if count > PAGE_BYTES / 2:
                     message = {"id": self.identifier(row), "role": row["role"] or "system", "timestamp": row["timestamp"], "content": [],
@@ -652,6 +660,35 @@ class SegmentReader:
                 "newerCursor": self.ref_token("page", position=stop, direction="newer", view=view, omitThinking=omit_thinking) if stop < len(self.rows) else None})
         finally:
             os.close(fd)
+
+
+def has_display_content(message):
+    # Preserve tool results (including status-only results), control records,
+    # and user messages; only omit empty assistant display messages.
+    if message.get("role") != "assistant" or message.get("__openclaw", {}).get("kind"):
+        return True
+    if any(message.get(key) for key in ("thinking", "toolSummary", "tool_calls", "function_call",
+                                       "media", "mediaRefs", "MediaPath", "MediaPaths", "mediaUrls", "savedPaths")):
+        return True
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                if block.strip():
+                    return True
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    if str(block.get("text") or "").strip():
+                        return True
+                elif block:
+                    # Unknown blocks may carry attachments or tool information.
+                    return True
+            elif block:
+                return True
+        return False
+    return bool(content)
 
 
 def preview_arguments(arguments):
