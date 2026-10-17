@@ -44,6 +44,14 @@ class SegmentCliTest(unittest.TestCase):
                                 self.assertEqual(main([command, option, "agent:main:thread:x", "--session-id", "old", *extra]), 0)
                             call.assert_called_once_with("agent:main:thread:x", "old", *positional, **expected)
 
+    def test_omit_thinking_cli_forwards_flag(self):
+        with patch.object(InstanceManagerV2, "segment_history", return_value={}) as call:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["sessions-segments-history", "--session-k", "agent:main:main",
+                                       "--session-id", "old", "--omit-thinking"]), 0)
+        call.assert_called_once_with("agent:main:main", "old", edge=None, limit=30,
+                                     cursor=None, view=None, omit_thinking=True)
+
     def test_arguments_and_response(self):
         with patch.object(InstanceManagerV2, "segment_history", return_value={"messages": []}) as call:
             output = io.StringIO()
@@ -123,6 +131,42 @@ class DirectSegmentReaderTest(unittest.TestCase):
         self.file.write_text(json.dumps({"type": "message", "id": "tool", "parentId": None,
             "message": {"role": "toolResult", "toolName": "read", "isError": False,
                         "content": [{"type": "text", "text": "source code " * 10000}]}}) + "\n")
+
+    def test_omit_thinking_inherits_pages_message_references_and_chunks(self):
+        rows = [{"type": "message", "id": str(i), "parentId": str(i - 1) if i else None,
+                 "message": {"role": "assistant", "content": [
+                     {"type": "thinking", "thinking": "private thought" * 1000},
+                     {"type": "text", "text": "answer" * 70000}]}} for i in range(2)]
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        page = read_segment({**self.request, "omitThinking": True, "limit": 1}, os.environ)
+        ref = page["messages"][0]["fullMessageRef"]["params"]
+        request = {**self.request, **ref, "action": "message"}
+        part = read_segment(request, os.environ)
+        data = base64.b64decode(part["data"])
+        while part["nextCursor"]:
+            part = read_segment({**request, "cursor": part["nextCursor"]}, os.environ)
+            data += base64.b64decode(part["data"])
+        self.assertEqual(json.loads(data)["content"], [{"type": "text", "text": "answer" * 70000}])
+        older = read_segment({**self.request, "cursor": page["olderCursor"]}, os.environ)
+        token = older["messages"][0]["fullMessageRef"]["params"]["ref"]
+        reader = SegmentReader(self.request, os.environ)
+        self.assertTrue(reader.decode(token, "message")["omitThinking"])
+        with self.assertRaises(ProtocolError) as raised:
+            read_segment({**self.request, "cursor": page["olderCursor"], "omitThinking": False}, os.environ)
+        self.assertEqual(raised.exception.code, "CURSOR_EXPIRED")
+        self.assertIn("private thought", self.file.read_text())
+
+    def test_omit_thinking_preserves_answer_tools_and_default(self):
+        content = [{"type": "thinking", "thinking": "thought"},
+                   {"type": "text", "text": "answer"},
+                   {"type": "toolCall", "id": "c", "name": "exec", "arguments": {"command": "pwd"}}]
+        self.file.write_text(json.dumps({"type": "message", "id": "a", "message": {
+            "role": "assistant", "content": content}}) + "\n")
+        for view in ("compact", "full"):
+            normal = read_segment({**self.request, "view": view}, os.environ)
+            self.assertEqual(normal["messages"][0]["content"][0]["type"], "thinking")
+            filtered = read_segment({**self.request, "view": view, "omitThinking": True}, os.environ)
+            self.assertEqual([b["type"] for b in filtered["messages"][0]["content"]], ["text", "toolCall"])
 
     def test_default_omits_code_and_does_not_fetch_original(self):
         with patch("subprocess.run", side_effect=AssertionError("No child processes")):

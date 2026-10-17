@@ -399,10 +399,10 @@ class SegmentReader:
     def ref_token(self, kind, **values):
         return self.token({"kind": kind, "snapshot": self.snapshot, "expires": self.expires, **values})
 
-    def message_ref(self, row, view):
+    def message_ref(self, row, view, omit_thinking=False):
         identifier = self.identifier(row)
         return {"method": "sessions.segments.message.get", "params": {"sessionKey": self.key, "sessionId": self.session_id,
-                "messageId": identifier, "ref": self.ref_token("message", messageId=identifier, view=view)}}
+                "messageId": identifier, "ref": self.ref_token("message", messageId=identifier, view=view, omitThinking=omit_thinking)}}
 
     @timed("messageReadMs")
     def raw(self, row):
@@ -479,7 +479,7 @@ class SegmentReader:
                                                  **({"mediaHash": media_hash} if media_hash else {}))}}
 
     @timed("messageBuildMs")
-    def materialize(self, row, *, view="full"):
+    def materialize(self, row, *, view="full", omit_thinking=False):
         raw = self.raw(row)
         message = raw["message"] if isinstance(raw.get("message"), dict) else ({"role": "system", "content": raw.get("content"), "customType": raw.get("customType")} if raw.get("type") == "custom_message" else {"role": "system", "content": [{"type": "text", "text": "Compaction"}], "compaction": raw})
         message.update(id=self.identifier(row), timestamp=millis(message.get("timestamp")) if millis(message.get("timestamp")) is not None else row["timestamp"])
@@ -519,6 +519,11 @@ class SegmentReader:
         visit(message, [])
         if media:
             message["mediaRefs"] = media
+        if omit_thinking:
+            message.pop("thinking", None)
+            if isinstance(message.get("content"), list):
+                message["content"] = [block for block in message["content"]
+                                      if not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking", "reasoning"}]
         strip_thinking_signatures(message)
         # Build references against original field positions before removing tool
         # details. Otherwise an image following a text result would point at the
@@ -542,6 +547,7 @@ class SegmentReader:
             values.update(pointer=reference["pointer"], source=reference["source"], mediaHash=extra["sha256"])
         elif "view" in extra:
             values["view"] = extra["view"]
+            values["omitThinking"] = extra.get("omitThinking", False)
             values["format"] = 2
         return {**extra, "encoding": "base64", "data": base64.b64encode(data[offset:end]).decode(), "offset": offset,
                 "totalBytes": len(data), "nextCursor": self.ref_token("chunk", **values) if end < len(data) else None}
@@ -566,9 +572,11 @@ class SegmentReader:
                     fail("CURSOR_EXPIRED", "Message output format changed; restart the message read")
                 row = self.locate(identifier)
                 view = reference.get("view", "full") if reference else "full"
-                message = self.materialize(row, view=view)
+                omit_thinking = reference.get("omitThinking", False) if reference else False
+                message = self.materialize(row, view=view, omit_thinking=omit_thinking)
                 base["messageId"] = identifier
                 base["view"] = view
+                base["omitThinking"] = omit_thinking
                 if not cursor and len(dumps(message, pretty=True).encode()) < PAGE_BYTES:
                     return self.finish({**base, "message": message})
                 data = dumps(message).encode()
@@ -609,6 +617,11 @@ class SegmentReader:
             view = self.input.get("view") or (reference.get("view", "full") if reference else "compact")
             if reference and self.input.get("view") and view != reference.get("view", "full"):
                 fail("CURSOR_EXPIRED", "Page view changed; reopen the segment")
+            omit_thinking = self.input.get("omitThinking")
+            if omit_thinking is None:
+                omit_thinking = reference.get("omitThinking", False) if reference else False
+            if reference and omit_thinking != reference.get("omitThinking", False):
+                fail("CURSOR_EXPIRED", "Thinking filter changed; reopen the segment")
             end = reference.get("position") if reference else 0 if self.input["edge"] == "start" else len(self.rows)
             forward = reference.get("direction") == "newer" if reference else self.input["edge"] == "start"
             if type(end) is not int or not 0 <= end <= len(self.rows):
@@ -616,11 +629,11 @@ class SegmentReader:
             messages, start, stop, size = [], end, end, 0
             while len(messages) < self.input["limit"] and (stop < len(self.rows) if forward else start > 0):
                 row = self.rows[stop if forward else start - 1]
-                message = self.materialize(row, view=view)
+                message = self.materialize(row, view=view, omit_thinking=omit_thinking)
                 count = len(dumps(message, pretty=True).encode())
                 if count > PAGE_BYTES / 2:
                     message = {"id": self.identifier(row), "role": row["role"] or "system", "timestamp": row["timestamp"], "content": [],
-                               "__openclaw": {"id": self.identifier(row), "truncated": True, "reason": "full_message_reference"}, "fullMessageRef": self.message_ref(row, view)}
+                               "__openclaw": {"id": self.identifier(row), "truncated": True, "reason": "full_message_reference"}, "fullMessageRef": self.message_ref(row, view, omit_thinking)}
                     count = len(dumps(message, pretty=True).encode())
                 if messages and size + count > PAGE_BYTES:
                     break
@@ -635,8 +648,8 @@ class SegmentReader:
             preview = [next((row["preview"] for row in reversed(self.rows) if row["role"] == role), "") for role in ("user", "assistant")]
             return self.finish({**base, "view": view, "segment": {"startedAt": min(times) if times else None, "endedAt": max(times) if times else None,
                 "isCurrent": entry.get("sessionId") == self.session_id, "readable": True, "preview": preview}, "messages": messages,
-                "olderCursor": self.ref_token("page", position=start, direction="older", view=view) if start > 0 else None,
-                "newerCursor": self.ref_token("page", position=stop, direction="newer", view=view) if stop < len(self.rows) else None})
+                "olderCursor": self.ref_token("page", position=start, direction="older", view=view, omitThinking=omit_thinking) if start > 0 else None,
+                "newerCursor": self.ref_token("page", position=stop, direction="newer", view=view, omitThinking=omit_thinking) if stop < len(self.rows) else None})
         finally:
             os.close(fd)
 

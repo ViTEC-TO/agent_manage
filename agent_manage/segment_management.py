@@ -11,7 +11,7 @@ from .segment_timing import CURRENT, measured_read
 
 
 class SegmentManagementMixin:
-    def segment_history(self, session_key, session_id, *, edge=None, limit=30, cursor=None, view=None):
+    def segment_history(self, session_key, session_id, *, edge=None, limit=30, cursor=None, view=None, omit_thinking=None):
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         if edge is not None and cursor is not None:
@@ -20,8 +20,10 @@ class SegmentManagementMixin:
             raise ValueError("edge must be start or end")
         if view is not None and view not in ("full", "compact"):
             raise ValueError("view must be full or compact")
+        if omit_thinking is not None and not isinstance(omit_thinking, bool):
+            raise ValueError("omit_thinking must be a boolean")
         return self._segment_bridge("history", session_key, session_id,
-                                    edge=edge or "end", limit=limit, cursor=cursor, view=view)
+                                    edge=edge or "end", limit=limit, cursor=cursor, view=view, omitThinking=omit_thinking)
 
     def segment_message_get(self, session_key, session_id, message_id, *, ref=None, cursor=None):
         return self._segment_bridge("message", session_key, session_id,

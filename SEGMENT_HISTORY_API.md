@@ -322,3 +322,13 @@ Python 直接读取 July 的 JSON 会话索引和 JSONL transcript/reset 归档�
 7. 切线程后丢弃迟到响应；引用失效时重新打开原目标段。
 
 浏览旧段仅切换显示内容。发送消息仍走逻辑线程的当前段。
+
+### 可选省略思考内容
+
+历史命令传入 `--omit-thinking` 后，不返回 thinking/reasoning/redacted_thinking 内容块及消息顶层 thinking 字段；默认仍保留。用户正文、助手回复、工具记录与图片按原有规则返回，原始 transcript 不修改。可与 `--view compact` 或 `--view full` 组合。
+
+```sh
+agent-manage sessions-segments-history --session-k 'agent:example:dashboard:thread-key' --session-id '<物理段 ID>' --omit-thinking
+```
+
+CLI 转发参数名为 `omit-thinking`（无值开关）；主机读取器字段为 `omitThinking: true`。分页游标、`fullMessageRef` 及消息分块游标继承该选项，续读只传游标即可，不能中途更换过滤模式；若需切换，请重新读取首页。单独 message-get 不带页面 ref 时仍按默认保留思考。
