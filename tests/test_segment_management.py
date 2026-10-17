@@ -45,12 +45,24 @@ class SegmentCliTest(unittest.TestCase):
                             call.assert_called_once_with("agent:main:thread:x", "old", *positional, **expected)
 
     def test_omit_thinking_cli_forwards_flag(self):
-        with patch.object(InstanceManagerV2, "segment_history", return_value={}) as call:
-            with redirect_stdout(io.StringIO()):
+        for flags, expected in ((["--omit-thinking"], True), (["--omit-thinking", "true"], True),
+                                (["--omit-thinking=true"], True), (["--omit-thinking", "TRUE"], True),
+                                (["--omit-thinking", "false"], False), (["--omit-thinking=false"], False)):
+            with self.subTest(flags=flags), patch.object(InstanceManagerV2, "segment_history", return_value={}) as call:
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["sessions-segments-history", "--session-k", "agent:main:main",
+                                           "--session-id", "old", *flags, "--limit", "50"]), 0)
+                call.assert_called_once_with("agent:main:main", "old", edge=None, limit=50,
+                                             cursor=None, view=None, omit_thinking=expected)
+
+    def test_omit_thinking_rejects_invalid_boolean(self):
+        with patch.object(InstanceManagerV2, "segment_history") as call:
+            output = io.StringIO()
+            with redirect_stdout(output):
                 self.assertEqual(main(["sessions-segments-history", "--session-k", "agent:main:main",
-                                       "--session-id", "old", "--omit-thinking"]), 0)
-        call.assert_called_once_with("agent:main:main", "old", edge=None, limit=50,
-                                     cursor=None, view=None, omit_thinking=True)
+                                       "--session-id", "old", "--omit-thinking", "maybe"]), 1)
+            self.assertEqual(json.loads(output.getvalue())["error"]["code"], "INVALID_ARGUMENT")
+            call.assert_not_called()
 
     def test_arguments_and_response(self):
         with patch.object(InstanceManagerV2, "segment_history", return_value={"messages": []}) as call:

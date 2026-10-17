@@ -136,7 +136,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
         segment.add_argument("--session-id", required=True)
         segment.add_argument("--cursor")
         if command == "sessions-segments-history":
-            segment.add_argument("--omit-thinking", action="store_true", default=None, help="omit thinking content; cursors inherit this option")
+            segment.add_argument("--omit-thinking", nargs="?", const="true", default=None, type=str.lower,
+                                 choices=["true", "false"], help="omit thinking content (optional true/false); cursors inherit when omitted")
             segment.add_argument("--edge", choices=["start", "end"])
             segment.add_argument("--limit", type=int, default=50)
             segment.add_argument("--view", choices=["compact", "full"],
@@ -325,7 +326,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         if args.command == "sessions-segments-history":
             result = client.segment_history(args.session_key, args.session_id, edge=args.edge,
                                             limit=args.limit, cursor=args.cursor, view=args.view,
-                                            **({"omit_thinking": True} if args.omit_thinking else {}))
+                                            **({"omit_thinking": args.omit_thinking == "true"} if args.omit_thinking is not None else {}))
             print_json(build_success_response(result))
             return 0
         if args.command == "sessions-segments-message-get":

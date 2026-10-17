@@ -331,6 +331,6 @@ Python 直接读取 July 的 JSON 会话索引和 JSONL transcript/reset 归档�
 agent-manage sessions-segments-history --session-k 'agent:example:dashboard:thread-key' --session-id '<物理段 ID>' --omit-thinking
 ```
 
-CLI 转发参数名为 `omit-thinking`（无值开关）；主机读取器字段为 `omitThinking: true`。分页游标、`fullMessageRef` 及消息分块游标继承该选项，续读只传游标即可，不能中途更换过滤模式；若需切换，请重新读取首页。单独 message-get 不带页面 ref 时仍按默认保留思考。
+CLI 转发参数名为 `omit-thinking`，支持无值开关、`--omit-thinking true` 和 `--omit-thinking=true`（均省略思考）；显式 `false` 则保留思考，布尔值不区分大小写。未传参数时继承游标设置；显式值与游标过滤模式不一致时返回 `CURSOR_EXPIRED`。平台可使用 `parameters: {"omit-thinking": "true"}`，需转发为对应 CLI 参数；主机读取器字段为 `omitThinking: true`。分页游标、`fullMessageRef` 及消息分块游标继承该选项，续读只传游标即可，不能中途更换过滤模式；若需切换，请重新读取首页。单独 message-get 不带页面 ref 时仍按默认保留思考。
 
 启用 `--omit-thinking` 或默认 compact 模式时，过滤后为空的普通 assistant 消息不占 `limit`，接口继续扫描同一段，直到返回足够消息、达到响应预算或段边界。工具状态、工具调用、图片、用户消息和控制记录仍保留。游标按实际扫描位置推进；若余下记录全部被过滤，可以返回空页及该方向的 null 游标。
