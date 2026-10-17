@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
-import tempfile
 from pathlib import Path
+
+from .file_io import atomic_write_bytes
 
 
 INITIALIZING_MARKER = ".unitag-seed-initializing"
@@ -74,26 +74,7 @@ def _merged_runtime_config(seed_config_path: Path, runtime_config_path: Path) ->
 
 
 def _atomic_write_runtime_config(path: Path, content: str) -> None:
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary.write(content)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        temporary_path.chmod(0o600)
-        os.replace(temporary_path, path)
-        temporary_path = None
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+    atomic_write_bytes(path, content.encode("utf-8"))
 
 
 def initialize_openclaw_seed(seed_dir: Path, target_dir: Path) -> dict[str, object]:

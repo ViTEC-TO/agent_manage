@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import RefreshAgentRequest
+from .file_io import atomic_write_bytes as _atomic_bytes, write_private_json as _private_json
 from .template_safety import validate_safe_name, validate_template_archive
 
 
@@ -28,25 +29,6 @@ def _fingerprint(path: Path):
         raise ValueError(f"Refresh requires a regular file: {path}")
     return {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "mode": stat.S_IMODE(path.stat().st_mode)}
-
-
-def _atomic_bytes(path: Path, content: bytes, mode: int = 0o600):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".refresh-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
-def _private_json(path: Path, payload):
-    _atomic_bytes(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode())
 
 
 def _protected(relative: Path) -> bool:

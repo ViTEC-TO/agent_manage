@@ -776,7 +776,6 @@ class ProvisioningMixin:
         model: Optional[str],
         rollback_on_fail: bool,
         step_scope: Optional[str],
-        require_existing_agent: bool = False,
         defer_template_dir_commit: bool = False,
     ) -> Dict[str, object]:
         workspace_existed_before = workspace.exists()
@@ -813,88 +812,12 @@ class ProvisioningMixin:
                     template_dir=template_dir,
                 ),
             )
-            manifest = self._load_template_manifest_for_timed_step(
-                steps, template_dir, step_scope
-            )
-            required_libraries = self._required_libraries_from_manifest(manifest)
-            if required_libraries:
-                self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("libraries.ensure", step_scope),
-                    lambda: self._ensure_required_libraries(required_libraries),
-                )
-
-            common_skill_sources = self._common_skill_sources_from_manifest(
-                template_dir=template_dir,
-                manifest=manifest,
-            )
-            if common_skill_sources:
-                self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("common_skills.install", step_scope),
-                    lambda: self._install_common_skills(common_skill_sources),
-                )
-
-            if require_existing_agent and not agent_exists:
-                raise FileNotFoundError(
-                    f"Prebuilt agent is missing from OpenClaw config: {agent_name}"
-                )
-            if agent_exists:
-                self.runner.log(f"agent exists, skip add: {agent_name}")
-                agent_result = {
-                    "skipped": True,
-                    "reason": (
-                        "prebuilt_agent_verified"
-                        if require_existing_agent
-                        else "agent_exists"
-                    ),
-                    "agent_name": agent_name,
-                }
-                steps.append(
-                    self._build_step_payload(
-                        self._scoped_step_name("agents.add", step_scope),
-                        agent_result,
-                    )
-                )
-            else:
-                self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("agents.add", step_scope),
-                    lambda: self._add_agent(
-                        agent_name=agent_name,
-                        workspace=workspace,
-                        model=model,
-                    ),
-                )
-                created_agent = True
-
-            if workspace_has_content:
-                self.runner.log(f"workspace not empty, skip populate: {workspace}")
-                workspace_result = {
-                    "skipped": True,
-                    "reason": "workspace_not_empty",
-                    "workspace": str(workspace),
-                }
-                steps.append(
-                    self._build_step_payload(
-                        self._scoped_step_name("workspace.populate", step_scope),
-                        workspace_result,
-                    )
-                )
-            else:
-                workspace_result = self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("workspace.populate", step_scope),
-                    lambda: self._populate_workspace(
-                        template_dir=template_dir,
-                        workspace=workspace,
-                    ),
-                )
-                created_workspace = (
-                    not workspace_existed_before
-                    and workspace.exists()
-                    and not workspace_result.get("skipped", False)
-                )
+            self._install_template_dependencies(steps, template_dir, step_scope)
+            created_agent = self._register_template_agent(
+                steps, agent_name, workspace, model=model, agent_exists=agent_exists, step_scope=step_scope)
+            created_workspace = self._populate_template_workspace(
+                steps, template_dir, workspace, has_content=workspace_has_content,
+                existed_before=workspace_existed_before, step_scope=step_scope)
             if preserved_template_dir is not None and not defer_template_dir_commit:
                 shutil.rmtree(preserved_template_dir)
                 preserved_template_dir = None
@@ -963,7 +886,6 @@ class ProvisioningMixin:
         model: Optional[str],
         rollback_on_fail: bool,
         step_scope: Optional[str],
-        require_existing_agent: bool = False,
     ) -> Dict[str, object]:
         if not template_dir.is_dir():
             raise FileNotFoundError(f"Agent template folder not found: {template_dir}")
@@ -975,88 +897,12 @@ class ProvisioningMixin:
         created_workspace = False
 
         try:
-            manifest = self._load_template_manifest_for_timed_step(
-                steps, template_dir, step_scope
-            )
-            required_libraries = self._required_libraries_from_manifest(manifest)
-            if required_libraries:
-                self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("libraries.ensure", step_scope),
-                    lambda: self._ensure_required_libraries(required_libraries),
-                )
-
-            common_skill_sources = self._common_skill_sources_from_manifest(
-                template_dir=template_dir,
-                manifest=manifest,
-            )
-            if common_skill_sources:
-                self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("common_skills.install", step_scope),
-                    lambda: self._install_common_skills(common_skill_sources),
-                )
-
-            if require_existing_agent and not agent_exists:
-                raise FileNotFoundError(
-                    f"Prebuilt agent is missing from OpenClaw config: {agent_name}"
-                )
-            if agent_exists:
-                self.runner.log(f"agent exists, skip add: {agent_name}")
-                agent_result = {
-                    "skipped": True,
-                    "reason": (
-                        "prebuilt_agent_verified"
-                        if require_existing_agent
-                        else "agent_exists"
-                    ),
-                    "agent_name": agent_name,
-                }
-                steps.append(
-                    self._build_step_payload(
-                        self._scoped_step_name("agents.add", step_scope),
-                        agent_result,
-                    )
-                )
-            else:
-                self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("agents.add", step_scope),
-                    lambda: self._add_agent(
-                        agent_name=agent_name,
-                        workspace=workspace,
-                        model=model,
-                    ),
-                )
-                created_agent = True
-
-            if workspace_has_content:
-                self.runner.log(f"workspace not empty, skip populate: {workspace}")
-                workspace_result = {
-                    "skipped": True,
-                    "reason": "workspace_not_empty",
-                    "workspace": str(workspace),
-                }
-                steps.append(
-                    self._build_step_payload(
-                        self._scoped_step_name("workspace.populate", step_scope),
-                        workspace_result,
-                    )
-                )
-            else:
-                workspace_result = self._run_timed_step(
-                    steps,
-                    self._scoped_step_name("workspace.populate", step_scope),
-                    lambda: self._populate_workspace(
-                        template_dir=template_dir,
-                        workspace=workspace,
-                    ),
-                )
-                created_workspace = (
-                    not workspace_existed_before
-                    and workspace.exists()
-                    and not workspace_result.get("skipped", False)
-                )
+            self._install_template_dependencies(steps, template_dir, step_scope)
+            created_agent = self._register_template_agent(
+                steps, agent_name, workspace, model=model, agent_exists=agent_exists, step_scope=step_scope)
+            created_workspace = self._populate_template_workspace(
+                steps, template_dir, workspace, has_content=workspace_has_content,
+                existed_before=workspace_existed_before, step_scope=step_scope)
 
             return {
                 "created_agent": created_agent,
@@ -1091,6 +937,41 @@ class ProvisioningMixin:
                     ensure_ascii=False,
                 )
             ) from exc
+
+    def _install_template_dependencies(self, steps, template_dir: Path, step_scope: Optional[str]) -> None:
+        manifest = self._load_template_manifest_for_timed_step(steps, template_dir, step_scope)
+        libraries = self._required_libraries_from_manifest(manifest)
+        if libraries:
+            self._run_timed_step(steps, self._scoped_step_name("libraries.ensure", step_scope),
+                                 lambda: self._ensure_required_libraries(libraries))
+        sources = self._common_skill_sources_from_manifest(template_dir=template_dir, manifest=manifest)
+        if sources:
+            self._run_timed_step(steps, self._scoped_step_name("common_skills.install", step_scope),
+                                 lambda: self._install_common_skills(sources))
+
+    def _register_template_agent(self, steps, agent_name: str, workspace: Path, *,
+                                 model: Optional[str], agent_exists: bool, step_scope: Optional[str]) -> bool:
+        step = self._scoped_step_name("agents.add", step_scope)
+        if agent_exists:
+            self.runner.log(f"agent exists, skip add: {agent_name}")
+            steps.append(self._build_step_payload(step, {
+                "skipped": True, "reason": "agent_exists", "agent_name": agent_name}))
+            return False
+        self._run_timed_step(steps, step,
+                             lambda: self._add_agent(agent_name=agent_name, workspace=workspace, model=model))
+        return True
+
+    def _populate_template_workspace(self, steps, template_dir: Path, workspace: Path, *,
+                                     has_content: bool, existed_before: bool, step_scope: Optional[str]) -> bool:
+        step = self._scoped_step_name("workspace.populate", step_scope)
+        if has_content:
+            self.runner.log(f"workspace not empty, skip populate: {workspace}")
+            steps.append(self._build_step_payload(step, {
+                "skipped": True, "reason": "workspace_not_empty", "workspace": str(workspace)}))
+            return False
+        result = self._run_timed_step(steps, step,
+            lambda: self._populate_workspace(template_dir=template_dir, workspace=workspace))
+        return not existed_before and workspace.exists() and not result.get("skipped", False)
 
     def _resolve_unpacked_root(self, extract_dir: Path) -> Path:
         candidates = [item for item in extract_dir.iterdir() if item.name != "__MACOSX"]

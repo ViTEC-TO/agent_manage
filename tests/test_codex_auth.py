@@ -355,6 +355,15 @@ for(const dir of process.argv.slice(2)){
         routing.write_text("""
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
+import dns from 'node:dns/promises';
+import {syncBuiltinESMExports} from 'node:module';
+// The SDK validates DNS before invoking the mocked HTTP transport.
+dns.lookup=async(hostname,options)=>{
+ if(hostname!=='api.dola.io')throw new Error('Unexpected DNS lookup: '+hostname);
+ const address={address:'93.184.216.34',family:4};
+ return options?.all?[address]:address;
+};
+syncBuiltinESMExports();
 const cfg=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,'utf8'));
 let imageCalls=0,audioCalls=0;
 globalThis.fetch=async(url,opts)=>{

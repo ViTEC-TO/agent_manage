@@ -42,6 +42,17 @@ DEFAULT_MODEL_ENV = InstanceManagerV2.DEFAULT_MODEL_ENV
 DEFAULT_AI_SHOP = InstanceManagerV2.DEFAULT_AI_SHOP
 DEFAULT_IMAGE_QUALITY = InstanceManagerV2.DEFAULT_IMAGE_QUALITY
 IMAGE_QUALITY_CHOICES = InstanceManagerV2.IMAGE_QUALITY_CHOICES
+SIMPLE_COMMAND_HANDLERS = {
+    "check-server-status": "check_server_status",
+    "tg-bot-status": "get_tg_bot_status",
+    "feishu-bot-status": "get_feishu_bot_status",
+    "weixin-bot-status": "get_weixin_bot_status",
+    "agents-list": "list_agents",
+    "current-model": "get_current_model",
+    "models": "get_supported_models",
+    "update-model": "update_model_catalog",
+    "current-gateway-token": "get_current_gateway_token",
+}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -225,6 +236,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
             timing.calls["cliSetupMs"] = 1
 
 
+        handler = SIMPLE_COMMAND_HANDLERS.get(args.command)
+        if handler is not None:
+            print_json(_success_response(getattr(client, handler)(), client))
+            return 0
+
         if args.command in ("create-instance", "configure-instance", "activate-instance"):
             request = CreateInstanceRequest(
                 template_name=getattr(args, "template_name", ""),
@@ -404,22 +420,6 @@ def _main(argv: Optional[List[str]] = None) -> int:
             )
             print_json(_success_response(result, client))
             return 0
-        if args.command == "check-server-status":
-            result = client.check_server_status()
-            print_json(_success_response(result, client))
-            return 0
-        if args.command == "tg-bot-status":
-            result = client.get_tg_bot_status()
-            print_json(_success_response(result, client))
-            return 0
-        if args.command == "feishu-bot-status":
-            result = client.get_feishu_bot_status()
-            print_json(_success_response(result, client))
-            return 0
-        if args.command == "weixin-bot-status":
-            result = client.get_weixin_bot_status()
-            print_json(_success_response(result, client))
-            return 0
         if args.command == "delete-tg-bot":
             result = client.delete_tg_bot(
                 DeleteTelegramBotRequest(
@@ -444,32 +444,12 @@ def _main(argv: Optional[List[str]] = None) -> int:
             )
             print_json(_success_response(result, client))
             return 0
-        if args.command == "agents-list":
-            result = client.list_agents()
-            print_json(_success_response(result, client))
-            return 0
         if args.command == "set-model":
             result = client.set_model(
                 SetModelRequest(
                     model_ref=args.model,
                 )
             )
-            print_json(_success_response(result, client))
-            return 0
-        if args.command == "current-model":
-            result = client.get_current_model()
-            print_json(_success_response(result, client))
-            return 0
-        if args.command == "models":
-            result = client.get_supported_models()
-            print_json(_success_response(result, client))
-            return 0
-        if args.command == "update-model":
-            result = client.update_model_catalog()
-            print_json(_success_response(result, client))
-            return 0
-        if args.command == "current-gateway-token":
-            result = client.get_current_gateway_token()
             print_json(_success_response(result, client))
             return 0
 

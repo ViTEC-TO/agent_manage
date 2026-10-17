@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .channel_bindings import count_channel_bindings, remove_account_bindings, replace_account_binding
+
 from .models import (
     AddFeishuBotRequest,
     AddTelegramBotRequest,
@@ -38,28 +40,7 @@ class ChannelManagementMixin:
             "allowFrom": ["*"],
         }
 
-        bindings = list(config.get("bindings", []))
-        filtered = []
-        removed = 0
-        for item in bindings:
-            match = item.get("match", {})
-            if (
-                match.get("channel") == "telegram"
-                and match.get("accountId") == account_id
-            ):
-                removed += 1
-                continue
-            filtered.append(item)
-        filtered.append(
-            {
-                "agentId": request.agent_name,
-                "match": {
-                    "channel": "telegram",
-                    "accountId": account_id,
-                },
-            }
-        )
-        config["bindings"] = filtered
+        removed = replace_account_binding(config, "telegram", account_id, request.agent_name)
 
         write_result = self._write_config(
             config,
@@ -118,28 +99,7 @@ class ChannelManagementMixin:
             account_config["name"] = request.bot_name
         accounts[account_id] = account_config
 
-        bindings = list(config.get("bindings", []))
-        filtered = []
-        removed = 0
-        for item in bindings:
-            match = item.get("match", {})
-            if (
-                match.get("channel") == self.FEISHU_CHANNEL_ID
-                and match.get("accountId") == account_id
-            ):
-                removed += 1
-                continue
-            filtered.append(item)
-        filtered.append(
-            {
-                "agentId": request.agent_name,
-                "match": {
-                    "channel": self.FEISHU_CHANNEL_ID,
-                    "accountId": account_id,
-                },
-            }
-        )
-        config["bindings"] = filtered
+        removed = replace_account_binding(config, self.FEISHU_CHANNEL_ID, account_id, request.agent_name)
 
         write_result = self._write_config(
             config,
@@ -213,28 +173,7 @@ class ChannelManagementMixin:
         accounts[normalized_account_id] = account_config
         weixin["channelConfigUpdatedAt"] = self._channel_timestamp()
 
-        bindings = list(config.get("bindings", []))
-        filtered = []
-        removed = 0
-        for item in bindings:
-            match = item.get("match", {})
-            if (
-                match.get("channel") == self.WEIXIN_PLUGIN_ID
-                and match.get("accountId") == normalized_account_id
-            ):
-                removed += 1
-                continue
-            filtered.append(item)
-        filtered.append(
-            {
-                "agentId": request.agent_name,
-                "match": {
-                    "channel": self.WEIXIN_PLUGIN_ID,
-                    "accountId": normalized_account_id,
-                },
-            }
-        )
-        config["bindings"] = filtered
+        removed = replace_account_binding(config, self.WEIXIN_PLUGIN_ID, normalized_account_id, request.agent_name)
 
         write_result = self._write_config(
             config,
@@ -270,17 +209,7 @@ class ChannelManagementMixin:
         config = self._load_config()
         telegram = config.get("channels", {}).get("telegram", {})
         accounts = telegram.get("accounts", {})
-        bindings = list(config.get("bindings", []))
-
-        binding_counts: Dict[str, int] = {}
-        for item in bindings:
-            match = item.get("match", {})
-            if match.get("channel") != "telegram":
-                continue
-            account_id = match.get("accountId")
-            if not account_id:
-                continue
-            binding_counts[account_id] = binding_counts.get(account_id, 0) + 1
+        binding_counts = count_channel_bindings(config, "telegram")
 
         bots: List[Dict[str, object]] = []
         for account_id in sorted(accounts.keys()):
@@ -309,17 +238,7 @@ class ChannelManagementMixin:
         config = self._load_config()
         feishu = config.get("channels", {}).get(self.FEISHU_CHANNEL_ID, {})
         accounts = feishu.get("accounts", {})
-        bindings = list(config.get("bindings", []))
-
-        binding_counts: Dict[str, int] = {}
-        for item in bindings:
-            match = item.get("match", {})
-            if match.get("channel") != self.FEISHU_CHANNEL_ID:
-                continue
-            account_id = match.get("accountId")
-            if not account_id:
-                continue
-            binding_counts[account_id] = binding_counts.get(account_id, 0) + 1
+        binding_counts = count_channel_bindings(config, self.FEISHU_CHANNEL_ID)
 
         bots: List[Dict[str, object]] = []
         for account_id in sorted(accounts.keys()):
@@ -360,19 +279,7 @@ class ChannelManagementMixin:
             raise FileNotFoundError(f"Telegram account '{request.bot_name}' not found")
 
         accounts.pop(request.bot_name, None)
-        bindings = list(config.get("bindings", []))
-        filtered = []
-        removed_bindings = 0
-        for item in bindings:
-            match = item.get("match", {})
-            if (
-                match.get("channel") == "telegram"
-                and match.get("accountId") == request.bot_name
-            ):
-                removed_bindings += 1
-                continue
-            filtered.append(item)
-        config["bindings"] = filtered
+        removed_bindings = remove_account_bindings(config, "telegram", request.bot_name)
         telegram["enabled"] = bool(accounts)
 
         write_result = self._write_config(
@@ -407,19 +314,7 @@ class ChannelManagementMixin:
             raise FileNotFoundError(f"Feishu account '{account_id}' not found")
         del accounts[account_id]
 
-        bindings = list(config.get("bindings", []))
-        filtered = []
-        removed_bindings = 0
-        for item in bindings:
-            match = item.get("match", {})
-            if (
-                match.get("channel") == self.FEISHU_CHANNEL_ID
-                and match.get("accountId") == account_id
-            ):
-                removed_bindings += 1
-                continue
-            filtered.append(item)
-        config["bindings"] = filtered
+        removed_bindings = remove_account_bindings(config, self.FEISHU_CHANNEL_ID, account_id)
         feishu["enabled"] = bool(accounts)
 
         write_result = self._write_config(
@@ -450,17 +345,7 @@ class ChannelManagementMixin:
         config = self._load_config()
         weixin = config.get("channels", {}).get(self.WEIXIN_PLUGIN_ID, {})
         accounts = weixin.get("accounts", {})
-        bindings = list(config.get("bindings", []))
-
-        binding_counts: Dict[str, int] = {}
-        for item in bindings:
-            match = item.get("match", {})
-            if match.get("channel") != self.WEIXIN_PLUGIN_ID:
-                continue
-            account_id = match.get("accountId")
-            if not account_id:
-                continue
-            binding_counts[account_id] = binding_counts.get(account_id, 0) + 1
+        binding_counts = count_channel_bindings(config, self.WEIXIN_PLUGIN_ID)
 
         bots: List[Dict[str, object]] = []
         for account_id in sorted(accounts.keys()):
@@ -502,19 +387,7 @@ class ChannelManagementMixin:
             )
 
         accounts.pop(normalized_account_id, None)
-        bindings = list(config.get("bindings", []))
-        filtered = []
-        removed_bindings = 0
-        for item in bindings:
-            match = item.get("match", {})
-            if (
-                match.get("channel") == self.WEIXIN_PLUGIN_ID
-                and match.get("accountId") == normalized_account_id
-            ):
-                removed_bindings += 1
-                continue
-            filtered.append(item)
-        config["bindings"] = filtered
+        removed_bindings = remove_account_bindings(config, self.WEIXIN_PLUGIN_ID, normalized_account_id)
         weixin["channelConfigUpdatedAt"] = self._channel_timestamp()
 
         write_result = self._write_config(
