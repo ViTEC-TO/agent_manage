@@ -169,10 +169,26 @@ class DirectSegmentReaderTest(unittest.TestCase):
         token = older["messages"][0]["fullMessageRef"]["params"]["ref"]
         reader = SegmentReader(self.request, os.environ)
         self.assertTrue(reader.decode(token, "message")["omitThinking"])
-        with self.assertRaises(ProtocolError) as raised:
-            read_segment({**self.request, "cursor": page["olderCursor"], "omitThinking": False}, os.environ)
-        self.assertEqual(raised.exception.code, "CURSOR_EXPIRED")
+        changed = read_segment({**self.request, "cursor": page["olderCursor"], "omitThinking": False}, os.environ)
+        changed_ref = changed["messages"][0]["fullMessageRef"]["params"]["ref"]
+        self.assertFalse(reader.decode(changed_ref, "message")["omitThinking"])
         self.assertIn("private thought", self.file.read_text())
+
+    def test_page_filter_can_change_and_new_cursor_inherits(self):
+        rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                 "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "thought"},
+                                                               {"type": "text", "text": str(i)}]}}
+                for i in range(4)]
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        for initial in (False, True):
+            page = read_segment({**self.request, "limit": 1, "omitThinking": initial}, os.environ)
+            changed = read_segment({**self.request, "limit": 1, "cursor": page["olderCursor"],
+                                    "omitThinking": not initial}, os.environ)
+            inherited = read_segment({**self.request, "limit": 1, "cursor": changed["olderCursor"]}, os.environ)
+            self.assertEqual([page["messages"][0]["id"], changed["messages"][0]["id"],
+                              inherited["messages"][0]["id"]], ["3", "2", "1"])
+            for result in (changed, inherited):
+                self.assertEqual(any(b["type"] == "thinking" for b in result["messages"][0]["content"]), initial)
 
     def test_filtered_pages_fill_limit_in_both_directions(self):
         rows = []

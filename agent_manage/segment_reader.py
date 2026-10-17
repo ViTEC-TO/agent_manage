@@ -621,8 +621,6 @@ class SegmentReader:
             omit_thinking = self.input.get("omitThinking")
             if omit_thinking is None:
                 omit_thinking = reference.get("omitThinking", False) if reference else False
-            if reference and omit_thinking != reference.get("omitThinking", False):
-                fail("CURSOR_EXPIRED", "Thinking filter changed; reopen the segment")
             end = reference.get("position") if reference else 0 if self.input["edge"] == "start" else len(self.rows)
             forward = reference.get("direction") == "newer" if reference else self.input["edge"] == "start"
             if type(end) is not int or not 0 <= end <= len(self.rows):
