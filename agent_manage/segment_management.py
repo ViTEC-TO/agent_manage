@@ -11,9 +11,9 @@ from .segment_timing import CURRENT, measured_read
 
 
 class SegmentManagementMixin:
-    def segment_history(self, session_key, session_id, *, edge=None, limit=30, cursor=None, view=None, omit_thinking=None):
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-            raise ValueError("limit must be between 1 and 100")
+    def segment_history(self, session_key, session_id, *, edge=None, limit=50, cursor=None, view=None, omit_thinking=None):
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
         if edge is not None and cursor is not None:
             raise ValueError("edge and cursor are mutually exclusive")
         if edge is not None and edge not in ("start", "end"):

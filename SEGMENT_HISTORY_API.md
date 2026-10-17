@@ -70,7 +70,7 @@ agent-manage sessions-segments-history \
 
 参数映射为 `sessionKey`, `sessionId`, `edge`, `limit`, `cursor`, `view`。
 `sessionKey` 必须包含 `agent:<agentId>:`；`sessionId` 必填，不替换成当前段。
-`edge` 默认为 `end`，也支持 `start`；`limit` 默认 30，范围 1–100。
+`edge` 默认为 `end`，也支持 `start`；`limit` 默认 50，范围 1–200。历史页消息内容预算为 1 MiB（最终响应还包含 JSON 包装、游标和计时字段）；到达预算时可能少于指定条数。显式传 `limit: 30` 的前端仍返回最多 30 条，需主动调整参数。
 传 `cursor` 时不要同时传 `edge`。向前、向后分页都用同一个命令：
 
 ```bash

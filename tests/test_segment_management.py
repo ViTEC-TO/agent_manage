@@ -6,7 +6,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,7 +49,7 @@ class SegmentCliTest(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["sessions-segments-history", "--session-k", "agent:main:main",
                                        "--session-id", "old", "--omit-thinking"]), 0)
-        call.assert_called_once_with("agent:main:main", "old", edge=None, limit=30,
+        call.assert_called_once_with("agent:main:main", "old", edge=None, limit=50,
                                      cursor=None, view=None, omit_thinking=True)
 
     def test_arguments_and_response(self):
@@ -103,11 +103,17 @@ class SegmentCliTest(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["sessions-segments-history", "--session-k", "agent:main:main",
                                        "--session-id", "old", "--view", "compact"]), 0)
-            call.assert_called_once_with("agent:main:main", "old", edge=None, limit=30, cursor=None, view="compact")
+            call.assert_called_once_with("agent:main:main", "old", edge=None, limit=50, cursor=None, view="compact")
+
+    def test_history_accepts_two_hundred_messages(self):
+        manager = InstanceManagerV2(LocalRunner())
+        with patch.object(manager, "_segment_bridge", return_value={}) as bridge:
+            manager.segment_history("agent:main:main", "old", limit=200)
+        self.assertEqual(bridge.call_args.kwargs["limit"], 200)
 
     def test_validation_before_native_process(self):
         manager = InstanceManagerV2(LocalRunner())
-        for options in ({"limit": 0}, {"limit": 101}, {"limit": True}, {"edge": "start", "cursor": "abc"}):
+        for options in ({"limit": 0}, {"limit": 201}, {"limit": True}, {"edge": "start", "cursor": "abc"}):
             with self.assertRaises(ValueError):
                 manager.segment_history("agent:main:main", "old", **options)
         for session_id in ("../secret", "", "a/b"):
@@ -211,6 +217,57 @@ class DirectSegmentReaderTest(unittest.TestCase):
             self.assertEqual(normal["messages"][0]["content"][0]["type"], "thinking")
             filtered = read_segment({**self.request, "view": view, "omitThinking": True}, os.environ)
             self.assertEqual([b["type"] for b in filtered["messages"][0]["content"]], ["text", "toolCall"])
+
+    def test_two_hundred_limit_with_filtering_and_bidirectional_pages(self):
+        rows = []
+        for i in range(850):
+            content = [{"type": "thinking", "thinking": "hidden"}] if i % 2 else [{"type": "text", "text": "回复 " + str(i)}]
+            rows.append({"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                         "message": {"role": "assistant", "content": content}})
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        for edge, direction in (("start", "newerCursor"), ("end", "olderCursor")):
+            page = read_segment({**self.request, "edge": edge, "limit": 200, "omitThinking": True}, os.environ)
+            seen, sizes = [], []
+            while True:
+                ids = [m["id"] for m in page["messages"]]
+                sizes.append(len(ids))
+                seen = seen + ids if edge == "start" else ids + seen
+                if not page[direction]:
+                    break
+                page = read_segment({**self.request, "limit": 200, "cursor": page[direction]}, os.environ)
+            self.assertEqual(sizes, [200, 200, 25])
+            self.assertEqual(seen, [str(i) for i in range(0, 850, 2)])
+
+    def test_unicode_multiline_page_stays_under_final_response_budget(self):
+        # UTF-8 and enclosing JSON indentation cost more than character counts.
+        text = "中文\n" * 18000
+        rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+                for i in range(20)]
+        self.file.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n")
+        page = read_segment({**self.request, "limit": 200}, os.environ)
+        self.assertGreater(len(page["messages"]), 2)
+        self.assertLess(len(page["messages"]), 20)
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(io.StringIO()):
+            print_json(build_success_response(page))
+        self.assertIsNone(json.loads(output.getvalue())["error"])
+        self.assertLess(len(output.getvalue().encode()), 8 * 1024 * 1024)
+        self.assertEqual(page["messages"][0]["content"][0]["text"], text)
+
+    def test_larger_page_budget_and_serialized_output(self):
+        rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                 "message": {"role": "assistant", "content": [{"type": "text", "text": "x" * 100000}]}}
+                for i in range(15)]
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        page = read_segment({**self.request, "limit": 200}, os.environ)
+        self.assertEqual(len(page["messages"]), 10)
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(io.StringIO()):
+            print_json(build_success_response(page))
+        self.assertIsNone(json.loads(output.getvalue())["error"])
+        previous = read_segment({**self.request, "cursor": page["olderCursor"], "limit": 200}, os.environ)
+        self.assertEqual([m["id"] for m in previous["messages"] + page["messages"]], [str(i) for i in range(15)])
 
     def test_default_omits_code_and_does_not_fetch_original(self):
         with patch("subprocess.run", side_effect=AssertionError("No child processes")):

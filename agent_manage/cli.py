@@ -138,7 +138,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         if command == "sessions-segments-history":
             segment.add_argument("--omit-thinking", action="store_true", default=None, help="omit thinking content; cursors inherit this option")
             segment.add_argument("--edge", choices=["start", "end"])
-            segment.add_argument("--limit", type=int, default=30)
+            segment.add_argument("--limit", type=int, default=50)
             segment.add_argument("--view", choices=["compact", "full"],
                                  help="default: compact tool commands/results; retain text and thinking")
         elif command == "sessions-segments-message-get":

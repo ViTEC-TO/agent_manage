@@ -22,6 +22,7 @@ from .response import ProtocolError
 from .segment_timing import count, timed
 
 PAGE_BYTES = 320 * 1024
+HISTORY_PAGE_BYTES = 1024 * 1024
 CHUNK_BYTES = 96 * 1024
 MEDIA_CHUNK_BYTES = 5 * 1024 * 1024
 TTL_MS = 60 * 60 * 1000
@@ -643,7 +644,7 @@ class SegmentReader:
                     message = {"id": self.identifier(row), "role": row["role"] or "system", "timestamp": row["timestamp"], "content": [],
                                "__openclaw": {"id": self.identifier(row), "truncated": True, "reason": "full_message_reference"}, "fullMessageRef": self.message_ref(row, view, omit_thinking)}
                     count = len(dumps(message, pretty=True).encode())
-                if messages and size + count > PAGE_BYTES:
+                if messages and size + count > HISTORY_PAGE_BYTES:
                     break
                 size += count
                 if forward:
