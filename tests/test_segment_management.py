@@ -203,6 +203,11 @@ class DirectSegmentReaderTest(unittest.TestCase):
                 with self.subTest(view=view, edge=edge):
                     request = {**self.request, "view": view, "omitThinking": True, "limit": 2, "edge": edge}
                     page = read_segment(request, os.environ)
+                    if edge == "end":
+                        self.assertEqual([m["id"] for m in page["messages"]], ["1", "4", "7", "10"])
+                        self.assertIsNone(page["olderCursor"])
+                        self.assertFalse(page["reachedUser"])
+                        continue
                     self.assertEqual([m["id"] for m in page["messages"]], expected[0])
                     page = read_segment({**self.request, "limit": 2, "cursor": page[cursor_key]}, os.environ)
                     self.assertEqual([m["id"] for m in page["messages"]], expected[1])
@@ -263,7 +268,7 @@ class DirectSegmentReaderTest(unittest.TestCase):
                 if not page[direction]:
                     break
                 page = read_segment({**self.request, "limit": 200, "cursor": page[direction]}, os.environ)
-            self.assertEqual(sizes, [200, 200, 25])
+            self.assertEqual(sizes, [200, 200, 25] if edge == "start" else [425])
             self.assertEqual(seen, [str(i) for i in range(0, 850, 2)])
 
     def test_unicode_multiline_page_stays_under_final_response_budget(self):
@@ -282,6 +287,35 @@ class DirectSegmentReaderTest(unittest.TestCase):
         self.assertIsNone(json.loads(output.getvalue())["error"])
         self.assertLess(len(output.getvalue().encode()), 8 * 1024 * 1024)
         self.assertEqual(page["messages"][0]["content"][0]["text"], text)
+
+    def test_default_backward_reads_to_user_beyond_limit_and_continues(self):
+        rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                 "message": {"role": "user" if i in (0, 3) else "assistant",
+                             "content": [{"type": "text", "text": str(i)}]}} for i in range(260)]
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        page = read_segment({**self.request, "limit": 2}, os.environ)
+        self.assertEqual([m["id"] for m in page["messages"]], [str(i) for i in range(3, 260)])
+        self.assertTrue(page["reachedUser"])
+        older = read_segment({**self.request, "cursor": page["olderCursor"]}, os.environ)
+        self.assertEqual([m["id"] for m in older["messages"]], ["0", "1", "2"])
+        self.assertTrue(older["reachedUser"])
+        self.assertIsNone(older["olderCursor"])
+        preview = read_segment({**self.request, "limit": 1}, os.environ)
+        self.assertEqual([m["id"] for m in preview["messages"]], ["259"])
+        self.assertFalse(preview["reachedUser"])
+
+    def test_backward_user_boundary_respects_byte_budget(self):
+        rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                 "message": {"role": "user" if i == 0 else "assistant",
+                             "content": [{"type": "text", "text": "x" * 100000}]}} for i in range(15)]
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        page = read_segment({**self.request, "limit": 2}, os.environ)
+        self.assertEqual(len(page["messages"]), 10)
+        self.assertFalse(page["reachedUser"])
+        older = read_segment({**self.request, "cursor": page["olderCursor"], "limit": 2}, os.environ)
+        self.assertTrue(older["reachedUser"])
+        self.assertIsNone(older["olderCursor"])
+        self.assertEqual([m["id"] for m in older["messages"] + page["messages"]], [str(i) for i in range(15)])
 
     def test_larger_page_budget_and_serialized_output(self):
         rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
@@ -485,10 +519,10 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
         result["message"]["toolCallId"] = "call1"
         self.append(result)
         page = self.history(limit=2)
-        message = page["messages"][0]
+        message = page["messages"][-2]
         self.assertEqual(message["content"][1]["thinking"], "Saved reasoning")
         self.assertEqual(message["content"][2]["arguments"], {"prompt": "完整参数"})
-        self.assertEqual(page["messages"][1]["content"][0]["text"], "tool-result" * 2000)
+        self.assertEqual(page["messages"][-1]["content"][0]["text"], "tool-result" * 2000)
         for reference, expected in zip(message["mediaRefs"], (image.read_bytes(), b"inline-image")):
             params = reference["params"]
             part = self.manager.segment_media_get(self.key, self.ids[0], params["ref"])
@@ -596,7 +630,7 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
             return data
 
         with patch("agent_manage.segment_reader.os.read", side_effect=observed_read):
-            messages = self.history(limit=2)["messages"]
+            messages = self.history(limit=2)["messages"][-2:]
         self.assertEqual(read_bytes, image.stat().st_size)
         self.assertEqual([len(message["mediaRefs"]) for message in messages], [1, 1])
         self.assertEqual(messages[0]["mediaRefs"][0]["mediaId"], messages[1]["mediaRefs"][0]["mediaId"])
@@ -731,7 +765,7 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
         page = self.manager.segment_history(self.key, self.ids[0], limit=2)
         self.assertEqual(page["view"], "compact")
         self.assertLess(len(json.dumps(page).encode()), 6000)
-        assistant, tool = page["messages"]
+        assistant, tool = page["messages"][-2:]
         self.assertEqual(assistant["content"][0]["text"], call["message"]["content"][0]["text"])
         self.assertEqual(assistant["content"][1], call["message"]["content"][1])
         summary = assistant["content"][2]
@@ -753,11 +787,11 @@ await sdk.saveSessionStore(process.argv[2], JSON.parse(process.argv[3]), {skipMa
             self.append(record)
         page = self.manager.segment_history(self.key, self.ids[0], limit=2)
         cursor = page["olderCursor"]
-        self.assertEqual([m["id"] for m in page["messages"]], ["tool-2", "tool-3"])
+        self.assertEqual([m["id"] for m in page["messages"]], ["s0-6", "tool-0", "tool-1", "tool-2", "tool-3"])
+        self.assertEqual(page["messages"][2]["toolSummary"]["status"], "error")
         page = self.manager.segment_history(self.key, self.ids[0], limit=2, cursor=cursor)
         self.assertEqual(page["view"], "compact")
-        self.assertEqual([m["id"] for m in page["messages"]], ["tool-0", "tool-1"])
-        self.assertEqual(page["messages"][1]["toolSummary"]["status"], "error")
+        self.assertEqual([m["id"] for m in page["messages"]], ["s0-4", "s0-5"])
         with self.assertRaises(ProtocolError) as error:
             self.manager.segment_history(self.key, self.ids[0], cursor=cursor, view="full")
         self.assertEqual(error.exception.code, "CURSOR_EXPIRED")

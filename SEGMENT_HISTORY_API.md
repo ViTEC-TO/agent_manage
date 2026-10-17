@@ -70,7 +70,7 @@ agent-manage sessions-segments-history \
 
 参数映射为 `sessionKey`, `sessionId`, `edge`, `limit`, `cursor`, `view`。
 `sessionKey` 必须包含 `agent:<agentId>:`；`sessionId` 必填，不替换成当前段。
-`edge` 默认为 `end`，也支持 `start`；`limit` 默认 50，范围 1–200。历史页消息内容预算为 1 MiB（最终响应还包含 JSON 包装、游标和计时字段）；到达预算时可能少于指定条数。显式传 `limit: 30` 的前端仍返回最多 30 条，需主动调整参数。
+`edge` 默认为 `end`，也支持 `start`；`limit` 默认 50，范围 1–200。历史页消息内容预算为 1 MiB（最终响应还包含 JSON 包装、游标和计时字段）；到达预算时可能少于指定条数。向后读取和单条预览按条数限制；从末尾或向前读取默认按下文的用户消息边界停止。
 传 `cursor` 时不要同时传 `edge`。向前、向后分页都用同一个命令：
 
 ```bash
@@ -334,3 +334,11 @@ agent-manage sessions-segments-history --session-k 'agent:example:dashboard:thre
 CLI 转发参数名为 `omit-thinking`，支持无值开关、`--omit-thinking true` 和 `--omit-thinking=true`（均省略思考）；显式 `false` 则保留思考，布尔值不区分大小写。未传参数时继承游标设置；显式传值时覆盖游标中的过滤设置，允许从当前分页位置切换，新返回的游标和消息引用记录本次设置。平台可使用 `parameters: {"omit-thinking": "true"}`，需转发为对应 CLI 参数；主机读取器字段为 `omitThinking: true`。分页游标、`fullMessageRef` 及消息分块游标继承该选项，续读只传游标即可；切换过滤设置只影响本次及后续读取，已返回的页面不重新处理。单独 message-get 不带页面 ref 时仍按默认保留思考。
 
 启用 `--omit-thinking` 或默认 compact 模式时，过滤后为空的普通 assistant 消息不占 `limit`，接口继续扫描同一段，直到返回足够消息、达到响应预算或段边界。工具状态、工具调用、图片、用户消息和控制记录仍保留。游标按实际扫描位置推进；若余下记录全部被过滤，可以返回空页及该方向的 null 游标。
+
+### 默认向前读取到用户消息
+
+从末尾读取（`edge: end`，默认）或使用 `olderCursor` 时，除 `limit: 1` 的单条预览外，默认读取到最近一条 `role: user` 消息（包含它）再停止。该方向的 `limit` 不再是返回条数上限，可能超过 200 条；1 MiB 消息预算仍生效。预算耗尽或段首到达时也会停止，不跨段自动读取。
+
+响应新增 `reachedUser`：本页包含用户消息时为 `true`，否则为 `false`。如果为 false 且有 `olderCursor`，可继续读取；没有游标则已到段首。这里只识别 transcript 的 user 角色，不保证该记录一定来自人工输入，也不保证当前轮已完成。单条超长用户消息可能以 `fullMessageRef` 返回，正文仍需补读。
+
+`limit: 1` 保持单条预览；`edge: start` / `newerCursor` 保持按条数分页。`--omit-thinking`、视图及媒体处理规则不变。

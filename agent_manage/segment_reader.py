@@ -626,7 +626,9 @@ class SegmentReader:
             if type(end) is not int or not 0 <= end <= len(self.rows):
                 fail("CURSOR_EXPIRED", "Invalid page boundary")
             messages, start, stop, size = [], end, end, 0
-            while len(messages) < self.input["limit"] and (stop < len(self.rows) if forward else start > 0):
+            until_user = not forward and self.input["limit"] != 1
+            reached_user = False
+            while (until_user or len(messages) < self.input["limit"]) and (stop < len(self.rows) if forward else start > 0):
                 row = self.rows[stop if forward else start - 1]
                 message = self.materialize(row, view=view, omit_thinking=omit_thinking)
                 if (omit_thinking or view == "compact") and not has_display_content(message):
@@ -651,10 +653,14 @@ class SegmentReader:
                 else:
                     messages.insert(0, message)
                     start -= 1
+                if message.get("role") == "user":
+                    reached_user = True
+                    if until_user:
+                        break
             times = [row["timestamp"] for row in records if row["timestamp"] is not None]
             preview = [next((row["preview"] for row in reversed(self.rows) if row["role"] == role), "") for role in ("user", "assistant")]
             return self.finish({**base, "view": view, "segment": {"startedAt": min(times) if times else None, "endedAt": max(times) if times else None,
-                "isCurrent": entry.get("sessionId") == self.session_id, "readable": True, "preview": preview}, "messages": messages,
+                "isCurrent": entry.get("sessionId") == self.session_id, "readable": True, "preview": preview}, "messages": messages, "reachedUser": reached_user,
                 "olderCursor": self.ref_token("page", position=start, direction="older", view=view, omitThinking=omit_thinking) if start > 0 else None,
                 "newerCursor": self.ref_token("page", position=stop, direction="newer", view=view, omitThinking=omit_thinking) if stop < len(self.rows) else None})
         finally:
