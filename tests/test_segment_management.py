@@ -304,6 +304,19 @@ class DirectSegmentReaderTest(unittest.TestCase):
         self.assertEqual([m["id"] for m in preview["messages"]], ["259"])
         self.assertFalse(preview["reachedUser"])
 
+    def test_user_inside_limit_does_not_stop_early_or_extend_to_another_user(self):
+        rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
+                 "message": {"role": "user" if i in (0, 3, 7) else "assistant",
+                             "content": [{"type": "text", "text": str(i)}]}} for i in range(10)]
+        self.file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        page = read_segment({**self.request, "limit": 5}, os.environ)
+        # User 7 is already included: fill to 5, do not stop at 7 or extend to 3.
+        self.assertEqual([m["id"] for m in page["messages"]], ["5", "6", "7", "8", "9"])
+        self.assertTrue(page["reachedUser"])
+        previous = read_segment({**self.request, "limit": 5, "cursor": page["olderCursor"]}, os.environ)
+        self.assertEqual([m["id"] for m in previous["messages"]], ["0", "1", "2", "3", "4"])
+        self.assertIsNone(previous["olderCursor"])
+
     def test_backward_user_boundary_respects_byte_budget(self):
         rows = [{"type": "message", "id": str(i), "parentId": str(i-1) if i else None,
                  "message": {"role": "user" if i == 0 else "assistant",
