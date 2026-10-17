@@ -16,7 +16,7 @@ from agent_manage.cli import main
 from agent_manage.local import CommandResult, LocalRunner
 from agent_manage.models import RefreshAgentRequest
 from agent_manage.orchestrator import InstanceManagerV2
-from agent_manage.response import TYPE_CODE_CONFLICT, TYPE_CODE_OPERATION_ROLLED_BACK, build_error_response
+from agent_manage.response import TYPE_CODE_OPERATION_ROLLED_BACK, build_error_response
 
 
 class RefreshRunner:
@@ -137,20 +137,25 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertEqual((self.workspace / "skills/weather/user.txt").read_text(), "user")
         self.assertEqual(self.state()["version"], "2.0.0")
 
-    def test_unknown_baseline_conflict_changes_nothing_until_explicit_override(self):
+    def test_unknown_baseline_conflict_is_skipped_and_remains_until_override(self):
         (self.workspace / "SOUL.md").write_text("custom soul")
-        with self.assertRaises(FileExistsError) as caught:
-            self.manager.refresh_agent(self.request())
-        response = build_error_response(caught.exception)
-        self.assertEqual(response["typeCode"], TYPE_CODE_CONFLICT)
-        self.assertEqual(response["error"]["details"]["conflicts"][0]["reason"], "no_baseline")
-        self.assertFalse((self.workspace / "template.yaml").exists())
-        self.assertFalse((self.config_path.parent / "agent-manage/agents/demo.json").exists())
+        result = self.manager.refresh_agent(self.request())
+        self.assertTrue(result["partial"])
+        self.assertEqual(result["skipped_conflicts"], result["conflicts"])
+        self.assertEqual(result["conflicts"][0]["reason"], "no_baseline")
+        self.assertEqual((self.workspace / "SOUL.md").read_text(), "custom soul")
+        self.assertTrue((self.workspace / "template.yaml").exists())
+        repeated = self.manager.refresh_agent(self.request())
+        self.assertEqual(repeated["skipped_conflicts"], result["skipped_conflicts"])
+        self.assertIsNone(repeated["backup_path"])
         result = self.manager.refresh_agent(self.request(replace_modified=True))
+        self.assertFalse(result["partial"])
+        self.assertEqual(result["skipped_conflicts"], [])
+        self.assertEqual(self.state()["pending_conflicts"], {})
+        self.assertEqual((self.workspace / "SOUL.md").read_text(), "version one\n")
         manifest = json.loads((Path(result["backup_path"]) / "manifest.json").read_text())
         entry = next(item for item in manifest["files"] if item["path"].endswith("SOUL.md"))
         self.assertEqual((Path(result["backup_path"]) / entry["backup_file"]).read_text(), "custom soul")
-        self.assertEqual((self.workspace / "MEMORY.md").read_text(), "user memory\n")
 
     def test_default_refresh_updates_existing_skill_without_baseline_and_backs_it_up(self):
         source = self.write_source("skills/aihot/install.sh", "#!/bin/sh\necho new\n")
@@ -237,7 +242,7 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertFalse((self.config_path.parent / "agent-manage").exists())
         self.assertFalse(self.runner.calls)
 
-    def test_skill_updates_do_not_bypass_other_template_conflicts(self):
+    def test_skill_and_model_updates_continue_while_other_conflicts_are_skipped(self):
         self.write_source("skills/aihot/install.sh", "new")
         target = self.workspace / "skills/aihot/install.sh"
         target.parent.mkdir(parents=True)
@@ -245,13 +250,12 @@ class RefreshManagementTest(unittest.TestCase):
         (self.workspace / "SOUL.md").write_text("user soul")
         before = self.config_path.read_bytes()
 
-        with self.assertRaises(FileExistsError) as caught:
-            self.manager.refresh_agent(RefreshAgentRequest("demo", template_dir=str(self.source)))
-
-        conflicts = build_error_response(caught.exception)["error"]["details"]["conflicts"]
+        result = self.manager.refresh_agent(RefreshAgentRequest("demo", template_dir=str(self.source)))
+        conflicts = result["skipped_conflicts"]
         self.assertEqual(conflicts, [{"path": str(self.workspace / "SOUL.md"), "reason": "no_baseline"}])
-        self.assertEqual(target.read_text(), "old")
-        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertEqual(target.read_text(), "new")
+        self.assertNotEqual(self.config_path.read_bytes(), before)
+        self.assertEqual((self.workspace / "SOUL.md").read_text(), "user soul")
 
     def test_modified_or_user_deleted_file_conflicts_only_when_template_changes(self):
         self.manager.refresh_agent(self.request())
@@ -260,9 +264,33 @@ class RefreshManagementTest(unittest.TestCase):
         self.assertIn(str(self.workspace / "SOUL.md"), result["template"]["local_overrides"])
         self.assertFalse((self.workspace / "SOUL.md").exists())
         self.write_source("SOUL.md", "new soul")
-        with self.assertRaises(FileExistsError):
-            self.manager.refresh_agent(self.request())
+        result = self.manager.refresh_agent(self.request())
+        self.assertTrue(result["partial"])
+        self.assertFalse((self.workspace / "SOUL.md").exists())
         self.assertEqual(self.state()["version"], "1.0.0")
+
+    def test_skipped_deletion_persists_and_can_be_explicitly_applied(self):
+        self.write_source("obsolete.md", "original")
+        self.manager.refresh_agent(self.request())
+        target = self.workspace / "obsolete.md"
+        target.write_text("user changes")
+        (self.source / "obsolete.md").unlink()
+        result = self.manager.refresh_agent(self.request())
+        self.assertTrue(result["partial"])
+        self.assertEqual(target.read_text(), "user changes")
+        self.assertEqual(self.manager.refresh_agent(self.request())["skipped_conflicts"], result["skipped_conflicts"])
+        self.manager.refresh_agent(self.request(replace_modified=True))
+        self.assertFalse(target.exists())
+        self.assertEqual(self.state()["pending_conflicts"], {})
+
+    def test_manually_resolved_conflict_clears_pending_state(self):
+        target = self.workspace / "SOUL.md"
+        target.write_text("custom")
+        self.manager.refresh_agent(self.request())
+        shutil.copy2(self.source / "SOUL.md", target)
+        result = self.manager.refresh_agent(self.request())
+        self.assertFalse(result["partial"])
+        self.assertEqual(self.state()["pending_conflicts"], {})
 
     def test_missing_memory_is_not_reseeded_even_with_replace(self):
         (self.workspace / "MEMORY.md").unlink()
@@ -435,7 +463,7 @@ class RefreshManagementTest(unittest.TestCase):
         (self.workspace / "SOUL.md").write_text("custom soul")
         result = self.manager.refresh_agent(self.request())
         self.assertTrue(result["skipped"])
-        self.assertFalse(result["can_apply"])
+        self.assertTrue(result["can_apply"])
         self.assertEqual(len(result["conflicts"]), 1)
         self.assertFalse((self.config_path.parent / "agent-manage").exists())
         self.assertFalse(self.runner.calls)

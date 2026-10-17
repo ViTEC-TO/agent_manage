@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `refresh-agent` 默认跳过冲突文件并继续更新其他文件及模型，返回 `partial`、`skipped_conflicts`；持续记录未解决冲突，保留显式覆盖和事务回滚。
+
 ## 0.5.5 - 2026-10-18
 
 - `refresh-agent` 同步内置共享 Skill，新增和覆盖同名文件；所有共享 Skill 保留目标目录多余文件，更新纳入原有备份与回滚，`--models-only` 不同步 Skill。

@@ -97,15 +97,15 @@ class RefreshManagementMixin:
             result = {"ok": True, "agent_name": name, "config_path": str(self.config_path),
                       "workspace": str(workspace), "models": models_result,
                       "template": template_result, "conflicts": conflicts,
+                      "skipped_conflicts": conflicts if not request.replace_modified else [],
+                      "partial": bool(conflicts and not request.replace_modified),
                       "changed_files": [{"path": str(item["target"]), "action": item["action"]} for item in plan],
                       "memory_preserved": True, "skipped": self.runner.dry_run,
                       "gateway_restarted": False, "activation_verified": False,
                       "restart_required": False}
             if self.runner.dry_run:
-                result["can_apply"] = not conflicts or request.replace_modified
+                result["can_apply"] = True
                 return result
-            if conflicts and not request.replace_modified:
-                raise FileExistsError(json.dumps({"error": "Template refresh conflicts; preview and use --replace-modified only after reviewing", "details": result}, ensure_ascii=False))
             # Validate the candidate without ever replacing the live config first.
             candidate_path = stage / "openclaw.json"
             _private_json(candidate_path, candidate)
@@ -118,7 +118,7 @@ class RefreshManagementMixin:
             self._verify_refresh_unchanged(plan, original_config)
             metadata_changed = new_state is not None and any(
                 new_state.get(key) != previous.get(key)
-                for key in ("template_name", "version", "package_hash", "files")
+                for key in ("template_name", "version", "package_hash", "files", "pending_conflicts")
             )
             if not plan and candidate == config and not metadata_changed:
                 if request.restart:
@@ -359,8 +359,10 @@ class RefreshManagementMixin:
             candidates[key] = frozen
             files[key] = _fingerprint(frozen)
         old_files = previous.get("files", {})
+        pending = previous.get("pending_conflicts", {})
+        next_pending = {}
         plan, conflicts, overrides = [], [], []
-        for key in sorted(set(files) | set(old_files)):
+        for key in sorted(set(files) | set(old_files) | set(pending)):
             scope, relative = key.split("/", 1)
             if scope not in roots or _protected(Path(relative)):
                 continue
@@ -374,15 +376,17 @@ class RefreshManagementMixin:
             # baseline or when the installed copy was modified/deleted locally.
             # The protected-path check above and transactional backups still apply.
             template_skill = scope == "common" or Path(relative).parts[0] == "skills"
-            if not template_skill and old is not None and old == after:
+            if not template_skill and key not in pending and old is not None and old == after:
                 overrides.append(str(target))
                 continue
             conflict = not template_skill and (
-                (old is None and before is not None) or (old is not None and before != old)
+                key in pending or (old is None and before is not None) or (old is not None and before != old)
             )
             if conflict:
-                conflicts.append({"path": str(target), "reason": "no_baseline" if old is None else "locally_modified"})
+                reason = pending.get(key) or ("no_baseline" if old is None else "locally_modified")
+                conflicts.append({"path": str(target), "reason": reason})
                 if not force:
+                    next_pending[key] = reason
                     continue
             plan.append({"root": roots[scope], "relative": relative, "target": target,
                          "source": candidates.get(key), "before": before, "after": after,
@@ -390,7 +394,8 @@ class RefreshManagementMixin:
         package_hash = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
         state = {"schema_version": 1, "agent_name": name, "workspace": str(workspace),
                  "config_path": str(self.config_path), "template_name": template_name,
-                 "version": version, "package_hash": package_hash, "files": files}
+                 "version": version, "package_hash": package_hash, "files": files,
+                 "pending_conflicts": next_pending}
         return state, plan, conflicts, {"skipped": False, "template_name": template_name,
             "version_before": previous.get("version"), "version_after": version,
             "baseline_known": bool(previous), "package_hash": package_hash,
