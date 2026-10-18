@@ -722,6 +722,13 @@ class ProvisioningMixin:
                 "- Public file, web, and static deliverables must follow the `nginx-delivery` Skill; deployment, index update, and a verified public URL are required for completion.",
                 "- When calling `image_generate`, use "
                 f"`quality: \"{resolved_quality}\"` unless the user explicitly requests another quality.",
+                "",
+                "## 进度沟通",
+                "",
+                "- 开始执行前，简短说明准备做什么。",
+                "- 多步骤或耗时任务中，在重要发现、阶段完成、遇到阻碍或调整方案时，主动说明进展；持续执行时尽量每 60 秒更新一次。",
+                "- 使用用户的语言，简短说明真实进展，不复述工具调用、不编造进度，也不因汇报而停下来等待确认。",
+                "- 进度说明必须实时作为用户可见的普通文字输出；支持 commentary 通道时使用该通道，不要只写在 thinking/reasoning 或工具日志里。",
                 self.RUNTIME_POLICY_END,
             ]
         )
