@@ -124,7 +124,7 @@ class InstanceManagerV2(
                 "gateway_token": gateway_token,
                 "gateway_token_preserved": container_gateway_token is not None or existing_gateway_token is not None,
                 "config_path": str(self.config_path),
-                "restart_required": True,
+                "restart_required": self._instance_restart_required(config_snapshot),
                 "steps": steps,
                 "total_elapsed_ms": self._elapsed_ms(execution_started_at),
             }
@@ -350,7 +350,7 @@ class InstanceManagerV2(
                 "workspace": str(workspace),
                 "archive_path": str(archive_path),
                 "template_dir": str(template_dir) if template_dir else None,
-                "restart_required": True,
+                "restart_required": self._instance_restart_required(config_snapshot),
                 "steps": steps,
                 "total_elapsed_ms": self._elapsed_ms(execution_started_at),
             }
@@ -494,7 +494,7 @@ class InstanceManagerV2(
                 "archive_path": str(archive_path),
                 "template_dir": str(template_dir) if template_dir else None,
                 "config_path": str(self.config_path),
-                "restart_required": True,
+                "restart_required": self._instance_restart_required(config_snapshot),
                 "steps": steps,
                 "total_elapsed_ms": self._elapsed_ms(execution_started_at),
             }
@@ -748,7 +748,7 @@ class InstanceManagerV2(
                     "requested_count": len(request.agents),
                     "added_count": added_count,
                     "skipped_count": skipped_count,
-                    "restart_required": added_count > 0,
+                    "restart_required": self._instance_restart_required(config_snapshot, legacy_required=added_count > 0),
                     "post_batch_actions": [],
                     "base_url": public_base_url,
                     "tools_config": tools_result,
